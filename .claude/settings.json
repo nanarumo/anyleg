@@ -1,0 +1,39 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Bash|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/Nicka/.local/bin/graphify.EXE hook-guard search",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Glob",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/Nicka/.local/bin/graphify.EXE hook-guard read",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "C:/Users/Nicka/.local/bin/graphify.EXE update . >/dev/null 2>&1 || true",
+            "async": true,
+            "timeout": 120
+          }
+        ]
+      }
+    ]
+  }
+}

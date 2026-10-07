@@ -1,0 +1,7 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    { "name": "app", "runtimeExecutable": "npm", "runtimeArgs": ["run", "dev"], "port": 5173 },
+    { "name": "app-alt", "runtimeExecutable": "npx", "runtimeArgs": ["vite", "--port", "5180", "--strictPort"], "port": 5180 }
+  ]
+}
