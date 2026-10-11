@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { PLINKO_RISK, PLINKO_ROWS, gradeCasino, money, plinkoPath, type PlinkoRisk } from './logic.ts'
-import { adjustBalance, logRound, useStore } from './store.ts'
+import { adjustBalance, logRound, serverRound, useStore } from './store.ts'
+import { SERVER } from './server.ts'
 import { CasinoLegs, ChipRack, StatBar, WinCelebration, LegDoneButtons, legText, type LegPlay } from './Casino.tsx'
 import { sfx } from './sound.ts'
 
@@ -56,7 +57,8 @@ export default function Plinko({ leg }: { leg?: LegPlay }) {
       return
     }
     const paid = +(b.stake * m).toFixed(2)
-    adjustBalance(paid); logRound('plinko', b.stake, paid, `${m}x (${b.risk})`)
+    if (!SERVER) adjustBalance(paid)
+    logRound('plinko', b.stake, paid, `${m}x (${b.risk})`)
     setLastWin(paid)
     if (m >= 1) sfx.win(); else sfx.lose()
     if (m >= 10) setParty({ amount: paid, title: m >= 100 ? 'JACKPOT BUCKET!' : 'BIG DROP!', sub: `${m}x on ${b.risk} risk` })
@@ -93,10 +95,16 @@ export default function Plinko({ leg }: { leg?: LegPlay }) {
     return () => cancelAnimationFrame(raf)
   }, [falling])
 
-  const drop = () => {
+  const drop = async () => {
+    let path = plinkoPath()
     if (leg) { if (balls.length || legResult) return }
-    else if (!bet || !adjustBalance(-bet)) return
-    ballsRef.current = [...ballsRef.current, { id: nextId.current++, path: plinkoPath(), t0: performance.now(), stake: leg ? 0 : bet, risk: leg ? 'medium' : risk, hop: Array.from({ length: PLINKO_ROWS + 1 }, () => 5 + Math.random() * 6), seg: 0 }]
+    else if (!bet) return
+    else if (SERVER) { // the server takes the wager and picks the bounces; the board animates them
+      const r = await serverRound<{ plinko: { path: (0 | 1)[] } }>('plinko', { wager: bet, risk })
+      if (typeof r === 'string') return alert(r)
+      path = r.outcome.plinko.path
+    } else if (!adjustBalance(-bet)) return
+    ballsRef.current = [...ballsRef.current, { id: nextId.current++, path, t0: performance.now(), stake: leg ? 0 : bet, risk: leg ? 'medium' : risk, hop: Array.from({ length: PLINKO_ROWS + 1 }, () => 5 + Math.random() * 6), seg: 0 }]
     setBalls(ballsRef.current)
   }
 

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { bacReturn, bacValue, gradeCasino, money, newShoe, playBaccarat, type Card } from './logic.ts'
-import { adjustBalance, logRound, useStore } from './store.ts'
+import { adjustBalance, logRound, serverRound, useStore } from './store.ts'
+import { SERVER } from './server.ts'
 import { CasinoLegs, Chip, ChipRack, StatBar, WinCelebration, LegDoneButtons, legText, type LegPlay } from './Casino.tsx'
 import { CardView } from './Cards.tsx'
 
@@ -38,11 +39,19 @@ export default function Baccarat({ leg }: { leg?: LegPlay }) {
   const pending = useRef<() => void>(undefined)
   useEffect(() => () => { clearTimeout(timer.current); pending.current?.() }, [])
 
-  const deal = (b = bets) => {
-    if (coup && !revealed) return
-    if (!leg && (!sum(b) || !adjustBalance(-sum(b)))) return
+  const dealing = useRef(false)
+  const deal = async (b = bets) => {
+    if ((coup && !revealed) || dealing.current) return
+    if (!leg && !sum(b)) return
     if (shoe.current.length < 60) shoe.current = newShoe(8)
-    const c = playBaccarat(shoe.current)
+    let c = playBaccarat(shoe.current)
+    if (SERVER && !leg) { // the server takes the bets and deals the coup; the table shows it
+      dealing.current = true
+      const r = await serverRound<{ baccarat: Coup }>('baccarat', { bets: (Object.keys(b) as Spot[]).filter(k => b[k] > 0).map(spot => ({ spot, amount: b[spot] })) })
+      dealing.current = false
+      if (typeof r === 'string') return alert(r)
+      c = r.outcome.baccarat
+    } else if (!leg && !adjustBalance(-sum(b))) return
     setCoup(c); setRevealed(false); setLastBets(b); setLegResult(undefined)
     const returned = (Object.keys(b) as Spot[]).reduce((t, k) => t + bacReturn(k, b[k], c), 0)
     const settle = () => {
@@ -52,7 +61,7 @@ export default function Baccarat({ leg }: { leg?: LegPlay }) {
         const r = gradeCasino(leg.pick, { baccarat: { winner: c.winner } })
         setLegResult({ text: legText(r), r })
       } else {
-        adjustBalance(returned)
+        if (!SERVER) adjustBalance(returned)
         logRound('baccarat', sum(b), returned, `${c.winner === 'tie' ? 'Tie' : c.winner === 'player' ? 'Player' : 'Banker'} ${bacValue(c.player)}–${bacValue(c.banker)}`)
       }
     }

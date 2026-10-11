@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { CRASH_PICKS, crashPoint, gradeCasino, money } from './logic.ts'
-import { adjustBalance, logRound, useStore } from './store.ts'
+import { adjustBalance, logRound, serverRound, useStore } from './store.ts'
+import { SERVER } from './server.ts'
 import { CasinoLegs, ChipRack, StatBar, WinCelebration, LegDoneButtons, legText, type LegPlay } from './Casino.tsx'
 import { sfx } from './sound.ts'
 
@@ -33,7 +34,7 @@ export default function Crash({ leg }: { leg?: LegPlay }) {
     if (leg) { leg.onRound({ crash: { point: r.point } }); return }
     const m = Math.min(at(performance.now() - r.start), r.point)
     const paid = m < r.point ? +(r.stake * m).toFixed(2) : 0
-    if (paid) adjustBalance(paid)
+    if (paid && !SERVER) adjustBalance(paid)
     logRound('crash', r.stake, paid, paid ? `Left the table · cashed out ${m.toFixed(2)}x` : `Crashed at ${r.point.toFixed(2)}x`)
   }, [])
 
@@ -42,17 +43,27 @@ export default function Crash({ leg }: { leg?: LegPlay }) {
     if (!r || r.cashed || m > r.point) return
     r.cashed = m
     const paid = +(r.stake * m).toFixed(2)
-    adjustBalance(paid)
+    if (!SERVER) adjustBalance(paid) // server rounds were paid when dealt
     logRound('crash', r.stake, paid, `Cashed out ${m.toFixed(2)}x`)
     setCashed(m); setLastWin(paid); sfx.win()
     if (m >= 5) setParty({ amount: paid, title: m >= 20 ? 'MOONSHOT!' : 'BIG CASH OUT!', sub: `Cashed out at ${m.toFixed(2)}x` })
   }
 
-  const launch = () => {
-    if (phase === 'flying') return
-    if (!leg && (!bet || !adjustBalance(-bet))) return
-    const autoAt = Number(auto) >= 1.01 ? Number(auto) : undefined
-    round.current = { point: crashPoint(), start: performance.now(), stake: leg ? 0 : bet, auto: leg ? undefined : autoAt }
+  const launching = useRef(false)
+  const launch = async () => {
+    if (phase === 'flying' || launching.current) return
+    const autoAt = Number(auto) >= 1.01 ? Math.round(Number(auto) * 100) / 100 : undefined
+    let point = crashPoint()
+    if (!leg && !bet) return
+    if (SERVER && !leg) { // ponytail: server rounds cash out at the auto target; tap-to-cash-out needs a server clock (step 4)
+      if (!autoAt) return alert('Set an auto cash out of 1.01x or more')
+      launching.current = true
+      const r = await serverRound<{ crash: { point: number } }>('crash', { wager: bet, cashAt: autoAt })
+      launching.current = false
+      if (typeof r === 'string') return alert(r)
+      point = r.outcome.crash.point
+    } else if (!leg && !adjustBalance(-bet)) return
+    round.current = { point, start: performance.now(), stake: leg ? 0 : bet, auto: leg ? undefined : autoAt }
     setPhase('flying'); setCashed(undefined); setCrashed(undefined); setMult(1); setLegResult(undefined)
     let lastTick = 1
     const frame = () => {
@@ -147,7 +158,7 @@ export default function Crash({ leg }: { leg?: LegPlay }) {
         {leg && <div className="leg-goal"><span className="chip">PARLAY LEG</span> <b>{leg.label}</b> <span className="muted small">· free round, no wager</span></div>}
         {leg ? (
           legResult ? <LegDoneButtons leg={leg} /> : <button className="cta wide-cta" onClick={launch} disabled={phase === 'flying'}>{phase === 'flying' ? 'Flying…' : 'Launch free round'}</button>
-        ) : phase === 'flying' && !cashed ? (
+        ) : phase === 'flying' && !cashed && !SERVER ? (
           <button className="cta wide-cta crash-cash" onClick={() => round.current && cashOut(Math.min(at(performance.now() - round.current.start), round.current.point))}>
             Cash out {money(bet * mult)}
           </button>

@@ -1,7 +1,8 @@
 import { sfx } from './sound.ts'
 import { useEffect, useRef, useState } from 'react'
 import { SLOT_SYMBOLS, gradeCasino, money, slotPays, spinReel } from './logic.ts'
-import { FREE_SPIN_VALUE, adjustBalance, logRound, useFreeSpin, useStore } from './store.ts'
+import { FREE_SPIN_VALUE, adjustBalance, logRound, serverRound, useFreeSpin, useStore } from './store.ts'
+import { SERVER } from './server.ts'
 import { CasinoLegs, ChipRack, StatBar, WinCelebration, LegDoneButtons, legText, type LegPlay } from './Casino.tsx'
 
 const FILLER = 18 // blurred symbols that whiz past before the reel stops
@@ -27,10 +28,17 @@ export default function Slots({ leg }: { leg?: LegPlay }) {
   useEffect(() => () => { clearTimeout(timer.current); pending.current?.() }, [])
 
   /** `free` spends a Free Spin reward: plays at a fixed $${FREE_SPIN_VALUE} with no charge. */
-  const spin = (free = false) => {
+  const spin = async (free = false) => {
     if (spinning) return
-    if (!leg && (free ? !useFreeSpin() : !adjustBalance(-bet))) return
-    const next = [0, 1, 2].map(() => [spinReel(), spinReel(), spinReel()])
+    let next = [0, 1, 2].map(() => [spinReel(), spinReel(), spinReel()])
+    const server = SERVER && !leg
+    if (server) { // the server takes the wager and stops the reels; this just animates them
+      if (free) return alert('Free spins are coming back soon') // ponytail: free spins need server-side inventory
+      setSpinning(true)
+      const r = await serverRound<{ slots: { windows: string[][] } }>('slots', { wager: bet })
+      if (typeof r === 'string') { setSpinning(false); return alert(r) }
+      next = r.outcome.slots.windows
+    } else if (!leg && (free ? !useFreeSpin() : !adjustBalance(-bet))) return
     setStrips(windows.map((w, i) => [...w, ...Array.from({ length: FILLER + i * 6 }, () => SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)]), ...next[i]]))
     setSpinId(id => id + 1)
     setSpinning(true); setWin(undefined); setLegResult(undefined); sfx.rattle(STOP_MS[2] / 1000)
@@ -42,7 +50,7 @@ export default function Slots({ leg }: { leg?: LegPlay }) {
       pending.current = undefined
       if (leg) leg.onRound({ slots: { mult: r.mult } })
       else {
-        adjustBalance(wager * r.mult)
+        if (!server) adjustBalance(wager * r.mult)
         if (!free) logRound('slots', wager, wager * r.mult, r.name)
       }
     }

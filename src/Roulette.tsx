@@ -1,7 +1,8 @@
 import { sfx } from './sound.ts'
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { gradeCasino, money, pickLabel, rouletteColor, roulettePays, rouletteWins } from './logic.ts'
-import { adjustBalance, logRound, toggleLeg, useStore } from './store.ts'
+import { adjustBalance, logRound, serverRound, toggleLeg, useStore } from './store.ts'
+import { SERVER } from './server.ts'
 import { CasinoLegs, casinoLeg, Chip, ChipRack, StatBar, WinCelebration, LegDoneButtons, legText, type LegPlay } from './Casino.tsx'
 
 const OUTSIDE = ['low', 'even', 'red', 'black', 'odd', 'high']
@@ -36,12 +37,21 @@ export default function Roulette({ leg }: { leg?: LegPlay }) {
     setPlaced([...placed, { pick, amount: chip }])
   }
 
-  const start = () => {
-    if (spinning || (!leg && (!total || !adjustBalance(-total)))) return
+  const paid = useRef(0) // what the server paid this spin
+  const start = async () => {
+    if (spinning || (!leg && !total)) return
+    let n = Math.floor(Math.random() * 37)
+    if (SERVER && !leg) { // the server takes the bets and picks the number; the wheel just shows it
+      setSpinning(true)
+      const r = await serverRound<{ roulette: number }>('roulette', { bets: placed })
+      if (typeof r === 'string') { setSpinning(false); return alert(r) }
+      n = r.outcome.roulette
+      paid.current = r.returned
+    } else if (!leg && !adjustBalance(-total)) return
     setBanner(undefined)
     setSpinning(true)
     sfx.rattle()
-    setSpin({ n: Math.floor(Math.random() * 37), key: Date.now() })
+    setSpin({ n, key: Date.now() })
   }
 
   // Called by the wheel once the ball has come to rest.
@@ -52,8 +62,8 @@ export default function Roulette({ leg }: { leg?: LegPlay }) {
       leg.onRound({ roulette: n })
       return setBanner({ n, text: legText(gradeCasino(leg.pick, { roulette: n })) })
     }
-    const won = placed.reduce((sum, p) => sum + (rouletteWins(p.pick, n) ? p.amount * roulettePays(p.pick) : 0), 0)
-    adjustBalance(won)
+    const won = SERVER ? paid.current : placed.reduce((sum, p) => sum + (rouletteWins(p.pick, n) ? p.amount * roulettePays(p.pick) : 0), 0)
+    if (!SERVER) adjustBalance(won)
     logRound('roulette', total, won, `${n} ${rouletteColor(n)}`)
     setLastWin(won)
     setBanner({ n, text: won ? `WIN ${money(won)}` : 'NO WIN' })
