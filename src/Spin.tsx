@@ -11,10 +11,11 @@ export function DailySpin({ onClose }: { onClose: () => void }) {
   const [won, setWon] = useState<number>()
   const [spinning, setSpinning] = useState(false)
   const ready = spinReady() || spinning
-  const spin = () => {
-    const i = spinDaily()
-    if (i === undefined) return
+  const spin = async () => {
+    if (spinning) return
     setSpinning(true)
+    const i = await spinDaily()
+    if (i === undefined) return setSpinning(false)
     // Land slice i under the pointer at the top, after a few full turns.
     setAngle(360 * 6 + (360 - (i * SLICE + SLICE / 2)) + (Math.random() - 0.5) * SLICE * 0.6)
     setTimeout(() => { setWon(i); setSpinning(false) }, 4200)

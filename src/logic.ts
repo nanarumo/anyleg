@@ -525,3 +525,15 @@ export const casinoPick = (game: CasinoGame, pick: string) => CASINO_PICKS[game]
 
 // ---- Chaos leg: a mystery casino leg added after you lock the ticket, for a profit boost ----
 export const CHAOS_BOOST = 0.4
+
+// ---- daily login spin: every slice pays at least $100 (per nick: $100 once a day, guaranteed); bigger cash or a bonus token on top is the gamble ----
+export const SPIN_PRIZES: { label: string; short?: string; cash?: number; spins?: number; boost?: 'boost25' | 'boost50' | 'boost100'; w: number }[] = [
+  { label: '$100', cash: 100, w: 30 }, { label: '$100 + 5 Free Spins', short: '$100+Spins', cash: 100, spins: 5, w: 14 }, { label: '$150', cash: 150, w: 20 },
+  { label: '$250', cash: 250, w: 8 }, { label: '$100', cash: 100, w: 14 }, { label: '$100 + 25% Boost', short: '$100+Boost', cash: 100, boost: 'boost25', w: 10 },
+  { label: '$200', cash: 200, w: 3 }, { label: '$500', cash: 500, w: 1 },
+]
+/** Weighted pick of a wheel slice. */
+export function spinIndex(rand = Math.random) {
+  let r = rand() * SPIN_PRIZES.reduce((t, p) => t + p.w, 0)
+  return Math.max(0, SPIN_PRIZES.findIndex(p => (r -= p.w) < 0))
+}

@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { CHAOS_BOOST, simRound, applyTokens, gradeCasino, roundText, parlayDecimal, settleFlex, FLEX_MIN, toDecimal, uid, setOddsFormat, settle, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side } from './logic.ts'
+import { SPIN_PRIZES, spinIndex, CHAOS_BOOST, simRound, applyTokens, gradeCasino, roundText, parlayDecimal, settleFlex, FLEX_MIN, toDecimal, uid, setOddsFormat, settle, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side } from './logic.ts'
 import { CHALLENGES, newlyCompleted, type SkinId } from './challenges.ts'
 import { PRIZES, weekId } from './season.ts'
 import { SERVER, house, pull, type ServerBet } from './server.ts'
@@ -424,22 +424,20 @@ const txn = (type: Txn['type'], amount: number): Txn => ({ id: uid(), type, amou
 
 /** Daily login spin: a free wheel spin every 24 hours, so the play-money bankroll never runs dry. */
 /** Daily spin: every slice pays at least $100 (per nick: $100 once a day, guaranteed); bigger cash or a bonus token on top is the gamble. */
-export const SPIN_PRIZES: { label: string; short?: string; cash?: number; spins?: number; boost?: BoostKey; w: number }[] = [
-  { label: '$100', cash: 100, w: 30 }, { label: '$100 + 5 Free Spins', short: '$100+Spins', cash: 100, spins: 5, w: 14 }, { label: '$150', cash: 150, w: 20 },
-  { label: '$250', cash: 250, w: 8 }, { label: '$100', cash: 100, w: 14 }, { label: '$100 + 25% Boost', short: '$100+Boost', cash: 100, boost: 'boost25', w: 10 },
-  { label: '$200', cash: 200, w: 3 }, { label: '$500', cash: 500, w: 1 },
-]
+export { SPIN_PRIZES }
 export const spinReady = () => !state.lastBonus || Date.now() - state.lastBonus >= BONUS_EVERY_MS
 /** Spins the wheel and pays the prize. Returns the winning slice, or undefined if it isn't ready. */
-export function spinDaily(rand = Math.random): number | undefined {
+export async function spinDaily(rand = Math.random): Promise<number | undefined> {
   if (!spinReady()) return undefined
-  let r = rand() * SPIN_PRIZES.reduce((t, p) => t + p.w, 0)
-  const i = SPIN_PRIZES.findIndex(p => (r -= p.w) < 0)
+  let i = spinIndex(rand), balance = state.balance + (SPIN_PRIZES[i].cash ?? 0)
+  if (SERVER) { // the server rolls the wheel and pays the cash; spins and boost tokens still live here
+    try { const r = await house<{ prize: number }>({ action: 'spin' }); i = r.prize; balance = r.balance } catch (e) { alert((e as Error).message); return undefined }
+  }
   const p = SPIN_PRIZES[i]
   const inv = { ...state.inv }
   if (p.spins) inv.spins += p.spins
   if (p.boost) inv[p.boost]++
-  set({ balance: +(state.balance + (p.cash ?? 0)).toFixed(2), inv, lastBonus: Date.now(), txns: p.cash ? [txn('bonus', p.cash), ...state.txns] : state.txns })
+  set({ balance: +balance.toFixed(2), inv, lastBonus: Date.now(), txns: p.cash ? [txn('bonus', p.cash), ...state.txns] : state.txns })
   return i
 }
 

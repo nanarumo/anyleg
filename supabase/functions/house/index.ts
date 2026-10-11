@@ -6,10 +6,12 @@
 //   start: { game: mines|poker|blackjack, wager | bets, mines? }  a hand that takes several taps -> { handId, view, balance }
 //   move:  { handId, tile | cash | hold | bj }  one tap                  -> { view, done, returned, balance? }
 //   close: { handId }                           walk away from a hand    -> { view, returned, balance }
+//   spin:  {}                          the daily login wheel, once per 24h -> { prize (slice index), balance }
 //   settle: {}                          grade open sports legs from finals -> { balance }
 // ponytail: settle runs when the app asks (it polls every 30s); a cron would settle tickets for players who are away
 import { createClient } from 'npm:@supabase/supabase-js@2'
-import { closeHand, dealRound, espnBoard, grade, gradeSports, handOver, handView, handWager, moveHand, playLeg, priceTickets, startHand, type Hand } from '../_shared/house.ts'
+import { SPIN_PRIZES, spinIndex } from '../../../src/logic.ts'
+import { closeHand, rng, dealRound, espnBoard, grade, gradeSports, handOver, handView, handWager, moveHand, playLeg, priceTickets, startHand, type Hand } from '../_shared/house.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -100,6 +102,15 @@ Deno.serve(async req => {
     }
     const { data: saved } = await admin.from('hands').update({ state: m.hand, version: r.version + 1 }).eq('id', r.id).eq('version', r.version).select('id')
     return saved?.length ? json({ view: handView(m.hand, false), done: false, returned: 0 }) : fail('Too fast, try again')
+  }
+
+  if (body.action === 'spin') {
+    // ponytail: check-then-pay, so two spins sent in the same instant could both pay; a unique daily key would close it
+    const { count } = await admin.from('ledger').select('id', { count: 'exact', head: true }).eq('user_id', user.id).eq('kind', 'spin').gte('at', new Date(Date.now() - 864e5).toISOString())
+    if (count) return fail('Your next spin unlocks 24 hours after the last one')
+    const prize = spinIndex(rng)
+    const { data: balance, error } = await admin.rpc('wallet_apply', { p_user: user.id, p_delta: SPIN_PRIZES[prize].cash ?? 0, p_kind: 'spin', p_ref: String(prize) })
+    return error ? fail(nice(error)) : json({ prize, balance })
   }
 
   if (body.action === 'cancel') {
