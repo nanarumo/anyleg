@@ -39,11 +39,11 @@ begin
 end $$;
 -- A tap that adds chips mid-hand (insurance, double, split) and the hand goes on.
 create function public.hand_debit(p_user uuid, p_hand uuid, p_version int, p_state jsonb, p_debit numeric)
-returns numeric language plpgsql security definer set search_path = public as $
+returns numeric language plpgsql security definer set search_path = public as $$
 begin
   update hands set state = p_state, version = version + 1, wager = wager + p_debit
     where id = p_hand and user_id = p_user and open and version = p_version;
   if not found then raise exception 'hand_changed'; end if;
   return wallet_apply(p_user, -p_debit, 'round', p_hand::text);
-end $;
+end $$;
 revoke execute on function public.open_hand, public.close_hand, public.hand_debit from public, anon, authenticated;
