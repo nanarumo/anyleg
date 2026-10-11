@@ -511,5 +511,17 @@ export function roundText(r: Round): string {
   return b.playerBJ ? 'Blackjack!' : b.dealerBust ? 'Dealer busted' : b.result === 'won' ? 'Hand won' : b.result === 'push' ? 'Hand pushed' : 'Hand lost'
 }
 
+// ---- every casino leg on offer: the app and the server both price legs from this one table ----
+const ROULETTE_PICKS = ['red', 'black', 'odd', 'even', 'low', 'high', 'd1', 'd2', 'd3', 'n0'].map(p => ({
+  pick: p, label: p === 'n0' ? 'Green 0' : `Next spin ${pickLabel(p)}`, odds: toAmerican(roulettePays(p)),
+}))
+export const CASINO_PICKS: Record<CasinoGame, { pick: string; label: string; odds: number }[]> = {
+  blackjack: BJ_PICKS, roulette: ROULETTE_PICKS, baccarat: BAC_PICKS, poker: POKER_PICKS, slots: SLOT_PICKS,
+  crash: CRASH_PICKS, mines: MINES_PICKS, plinko: PLINKO_PICKS,
+}
+/** A house pick, or a roulette straight-up number. Undefined = not a leg we offer. */
+export const casinoPick = (game: CasinoGame, pick: string) => CASINO_PICKS[game]?.find(x => x.pick === pick)
+  ?? (game === 'roulette' && /^n([1-9]|[12]\d|3[0-6])$/.test(pick) ? { pick, label: `#${pick.slice(1)} straight up`, odds: toAmerican(36) } : undefined)
+
 // ---- Chaos leg: a mystery casino leg added after you lock the ticket, for a profit boost ----
 export const CHAOS_BOOST = 0.4

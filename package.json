@@ -6,7 +6,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "ios": "npm run build && npx cap sync ios",
-    "test": "node src/logic.test.ts && node src/progression.test.ts && node src/challenges.test.ts && node src/duel.test.ts && node src/live.test.ts && node src/season.test.ts && node src/casino2.test.ts"
+    "test": "node src/logic.test.ts && node src/progression.test.ts && node src/challenges.test.ts && node src/duel.test.ts && node src/live.test.ts && node src/season.test.ts && node src/casino2.test.ts && node supabase/functions/_shared/house.test.ts"
   },
   "dependencies": {
     "@capacitor/core": "^8.5.2",

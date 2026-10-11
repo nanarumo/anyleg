@@ -1,7 +1,7 @@
 import { sfx } from './sound.ts'
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import {
-  BAC_PICKS, BJ_PICKS, CRASH_PICKS, MINES_PICKS, PLINKO_PICKS, POKER_PICKS, SLOT_PICKS, fmtOdds, money, pickLabel, roulettePays, toAmerican,
+  CASINO_PICKS, casinoPick, fmtOdds, money,
   type CasinoGame, type Result, type Round,
 } from './logic.ts'
 import { toggleLeg, useStore, type Leg } from './store.ts'
@@ -65,24 +65,14 @@ export function StatBar({ bet, win }: { bet: number; win: number }) {
 }
 
 // ---- parlay legs ----
-type Pick = { pick: string; label: string; odds: number }
-
-const ROULETTE_PICKS = ['red', 'black', 'odd', 'even', 'low', 'high', 'd1', 'd2', 'd3', 'n0'].map(p => ({
-  pick: p, label: p === 'n0' ? 'Green 0' : `Next spin ${pickLabel(p)}`, odds: toAmerican(roulettePays(p)),
-}))
-/** Every casino leg on offer, by game (the lobby quick-add, the tables and Swipe all use this). */
-export const CASINO_PICKS: Record<CasinoGame, Pick[]> = {
-  blackjack: BJ_PICKS, roulette: ROULETTE_PICKS, baccarat: BAC_PICKS, poker: POKER_PICKS, slots: SLOT_PICKS,
-  crash: CRASH_PICKS, mines: MINES_PICKS, plinko: PLINKO_PICKS,
-}
+export { CASINO_PICKS }
 
 export const ROUND_NAME: Record<CasinoGame, string> = { blackjack: 'hand', roulette: 'spin', baccarat: 'coup', poker: 'hand', slots: 'spin', crash: 'round', mines: 'board', plinko: 'ball' }
 
 /** The slip leg for a house pick (or a roulette straight-up number). Every place that adds a casino leg builds it here,
  * so the same leg reads the same everywhere and a shared link can't smuggle in its own label or price. */
 export function casinoLeg(game: CasinoGame, pick: string): Leg | undefined {
-  const p = CASINO_PICKS[game]?.find(x => x.pick === pick)
-    ?? (game === 'roulette' && /^n([1-9]|[12]d|3[0-6])$/.test(pick) ? { pick, label: `#${pick.slice(1)} straight up`, odds: toAmerican(36) } : undefined)
+  const p = casinoPick(game, pick)
   return p && { id: `casino:${game}:${pick}`, label: p.label, sub: `${GAME_NAMES[game]} · next ${ROUND_NAME[game]}`, odds: p.odds, casino: { game, pick } }
 }
 
