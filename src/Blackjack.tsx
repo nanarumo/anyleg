@@ -3,7 +3,8 @@ import {
   bjOutcome, buster, canSplit, gradeCasino, handValue, isBlackjack, luckyLadies, money, newShoe, perfectPairs,
   playDealer, twentyOnePlus3, type Card, type Result, type Round,
 } from './logic.ts'
-import { adjustBalance, logRound, useStore } from './store.ts'
+import { adjustBalance, logRound, serverHand, useStore } from './store.ts'
+import { SERVER } from './server.ts'
 import { CasinoLegs, Chip, ChipRack, StatBar, WinCelebration, LegDoneButtons, legText, type LegPlay } from './Casino.tsx'
 import { CardView } from './Cards.tsx'
 
@@ -75,6 +76,13 @@ export default function Blackjack({ leg }: { leg?: LegPlay }) {
       adjustBalance(returned + (bustHit?.returned ?? 0))
       logRound('blackjack', roundStake.current, returned + sideReturned.current, split ? 'Split hands' : resultText(first, hs[0].cards))
     }
+    present(hs, d, outcomes.map(o => o.result), returned, bustHit, before, round)
+  }
+
+  /** Show a finished hand: the dealer's extra cards land, then results, banner and celebration. */
+  const present = (hs: Hand[], d: Card[], results: Result[], returned: number, bustHit: SideHit | undefined, before: number, round: Round) => {
+    const split = hs.length > 1
+    const first = results[0]
     setDealer([...d])
     setPhase('done')
     const staked = hs.reduce((t, h) => t + h.wager, 0)
@@ -82,7 +90,7 @@ export default function Blackjack({ leg }: { leg?: LegPlay }) {
     if (leg) legDue.current = () => { legDue.current = undefined; leg.onRound(round) }
     // Show results once the dealer's extra cards have landed.
     timer.current = setTimeout(() => {
-      setHands(hs.map((h, i) => ({ ...h, result: outcomes[i].result })))
+      setHands(hs.map((h, i) => ({ ...h, result: results[i] })))
       if (bustHit) setSide(s => ({ ...s, bust: bustHit }))
       if (leg) {
         legDue.current?.() // settle the leg when the result is on screen, not before the dealer finishes
@@ -94,7 +102,7 @@ export default function Blackjack({ leg }: { leg?: LegPlay }) {
       setLastWin(paid)
       if (returned > staked || sideReturned.current > 0) {
         const bj = !split && isBlackjack(hs[0].cards)
-        setParty({ amount: paid, title: bj ? 'BLACKJACK!' : returned > staked ? 'YOU WIN!' : 'SIDE BET WINS!', sub: celebrationSub(outcomes.map(o => o.result), hs, d) })
+        setParty({ amount: paid, title: bj ? 'BLACKJACK!' : returned > staked ? 'YOU WIN!' : 'SIDE BET WINS!', sub: celebrationSub(results, hs, d) })
       }
     }, ((d.length - before) * DEALER_STEP + 0.9) * 1000)
   }
@@ -109,17 +117,56 @@ export default function Blackjack({ leg }: { leg?: LegPlay }) {
     } else finish(hs, [...dealer])
   }
 
+  // ---- server mode: the shoe and the hole card stay on the server; each button asks it ----
+  const server = SERVER && !leg
+  const handId = useRef<string>(undefined)
+  const busy = useRef(false)
+  const ask = async (body: Record<string, unknown>, fresh = false) => {
+    if (busy.current) return
+    busy.current = true
+    const r = await serverHand<BjView>(body)
+    busy.current = false
+    if (typeof r === 'string') return alert(r)
+    if (r.handId) handId.current = r.handId
+    const v = r.view
+    const hs: Hand[] = v.hands.map((h, i) => ({ ...h, cards: keepCards(fresh ? [] : hands[i]?.cards ?? [], h.cards), result: undefined }))
+    const d = keepCards(fresh ? [] : dealer, v.dealer)
+    setInsurance(v.insurance); setActive(v.active)
+    if (fresh) {
+      const s = { pp: v.side.pp, t3: v.side.t3, ll: v.side.ll }
+      setSide(s)
+      sideReturned.current = (s.pp?.returned ?? 0) + (s.t3?.returned ?? 0) + (s.ll?.returned ?? 0)
+    }
+    if (v.phase !== 'done') { setHands(hs); setDealer(d); setPhase(v.phase); return }
+    handId.current = undefined
+    const sides = Object.values(v.side).reduce((t, s) => t + (s?.returned ?? 0), 0)
+    const ins = isBlackjack(d) ? v.insurance * 3 : 0
+    sideReturned.current = sides + ins
+    const results = v.hands.map(h => h.result!)
+    logRound('blackjack', roundStake.current, v.returned, hs.length > 1 ? 'Split hands' : resultText(results[0], hs[0].cards))
+    setHands(hs)
+    present(hs, d, results, v.returned - sides - ins, v.side.bust, fresh ? d.length : dealer.length, { blackjack: { result: results[0], playerBJ: false, dealerBust: false } })
+  }
+
   // Leaving the table mid-hand stands every open hand, so a wager is never lost to navigation.
   const latest = useRef({ phase, hands, dealer, finish })
   latest.current = { phase, hands, dealer, finish }
   useEffect(() => () => {
     clearTimeout(timer.current)
     const l = latest.current
-    if (l.phase === 'play' || l.phase === 'insurance') l.finish(l.hands.map(h => ({ ...h, done: true })), [...l.dealer])
+    if (handId.current) serverHand({ action: 'close', handId: handId.current }) // the server stands every hand and pays
+    else if (l.phase === 'play' || l.phase === 'insurance') l.finish(l.hands.map(h => ({ ...h, done: true })), [...l.dealer])
     legDue.current?.()
   }, [])
 
   const deal = (b: Bets = bets) => {
+    if (server) {
+      if (!b.main) return
+      roundStake.current = sum(b)
+      clearTimeout(timer.current)
+      setLanded(new Set()); setBanner(undefined); setLastBets(b); setBets(b); setInsurance(0)
+      return ask({ action: 'start', game: 'blackjack', bets: b }, true)
+    }
     if (!leg && (!b.main || !adjustBalance(-sum(b)))) return
     roundStake.current = leg ? 0 : sum(b)
     clearTimeout(timer.current)
@@ -146,6 +193,7 @@ export default function Blackjack({ leg }: { leg?: LegPlay }) {
   }
 
   const decideInsurance = (take: boolean) => {
+    if (server) { if (take) roundStake.current += Math.floor(hands[0].wager / 2); return ask({ action: 'move', handId: handId.current, bj: take ? 'insure' : 'noInsure' }) }
     const ins = take ? Math.floor(hands[0].wager / 2) : 0
     if (ins && !adjustBalance(-ins)) return
     roundStake.current += ins
@@ -158,6 +206,7 @@ export default function Blackjack({ leg }: { leg?: LegPlay }) {
   }
 
   const hit = () => {
+    if (server) return ask({ action: 'move', handId: handId.current, bj: 'hit' })
     const h = hands[active]
     const cards = [...h.cards, draw()]
     const bust = handValue(cards) >= 21
@@ -166,10 +215,11 @@ export default function Blackjack({ leg }: { leg?: LegPlay }) {
     else setHands(hs)
   }
 
-  const stand = () => advance(hands.map((x, i) => (i === active ? { ...x, done: true } : x)), active)
+  const stand = () => server ? ask({ action: 'move', handId: handId.current, bj: 'stand' }) : advance(hands.map((x, i) => (i === active ? { ...x, done: true } : x)), active)
 
   const double = () => {
     const h = hands[active]
+    if (server) { roundStake.current += h.wager; return ask({ action: 'move', handId: handId.current, bj: 'double' }) }
     if (!leg && !adjustBalance(-h.wager)) return
     if (!leg) roundStake.current += h.wager
     advance(hands.map((x, i) => (i === active ? { cards: [...x.cards, draw()], wager: x.wager * 2, done: true } : x)), active)
@@ -177,6 +227,7 @@ export default function Blackjack({ leg }: { leg?: LegPlay }) {
 
   const split = () => {
     const h = hands[active]
+    if (server) { roundStake.current += h.wager; return ask({ action: 'move', handId: handId.current, bj: 'split' }) }
     if (!leg && !adjustBalance(-h.wager)) return
     if (!leg) roundStake.current += h.wager
     const [a, b] = h.cards
@@ -384,6 +435,20 @@ function FeltPrint() {
       <text className="fp-ins"><textPath href="#fp-ins" startOffset="50%" textAnchor="middle">INSURANCE PAYS 2 TO 1</textPath></text>
     </svg>
   )
+}
+
+type BjView = {
+  phase: 'insurance' | 'play' | 'done'; hands: (Hand & { result?: Result })[]; active: number; dealer: Card[]
+  insurance: number; side: Partial<Record<Spot, SideHit>>; returned: number
+}
+/** Keep the card objects already on the felt (card ids drive the deal animation); the hole card turns over in place. */
+function keepCards(prev: Card[], next: Card[]): Card[] {
+  return next.map((c, i) => {
+    const p = prev[i]
+    if (!p) return c
+    if (p.rank === '?') return Object.assign(p, c)
+    return p.rank === c.rank && p.suit === c.suit ? p : c
+  })
 }
 
 function resultText(r: Result, p: Card[]) {

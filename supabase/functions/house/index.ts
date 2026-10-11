@@ -3,13 +3,13 @@
 //   bet:   { legs, stake, mode, flex, chaos }  priced here, stake taken  -> { ids, tickets, balance }
 //   leg:   { betId, legId }             free round for a casino leg      -> { round, note, legs, status, payout, balance }
 //   cancel: { betId }                  undo a ticket within a minute, before anything is graded -> { balance }
-//   start: { game: mines|poker, wager, mines? }  a hand that takes several taps -> { handId, view, balance }
-//   move:  { handId, tile | cash | hold }       one tap                  -> { view, done, returned, balance? }
+//   start: { game: mines|poker|blackjack, wager | bets, mines? }  a hand that takes several taps -> { handId, view, balance }
+//   move:  { handId, tile | cash | hold | bj }  one tap                  -> { view, done, returned, balance? }
 //   close: { handId }                           walk away from a hand    -> { view, returned, balance }
 //   settle: {}                          grade open sports legs from finals -> { balance }
 // ponytail: settle runs when the app asks (it polls every 30s); a cron would settle tickets for players who are away
 import { createClient } from 'npm:@supabase/supabase-js@2'
-import { closeHand, dealRound, espnBoard, grade, gradeSports, handView, moveHand, playLeg, priceTickets, startHand, type Hand } from '../_shared/house.ts'
+import { closeHand, dealRound, espnBoard, grade, gradeSports, handOver, handView, handWager, moveHand, playLeg, priceTickets, startHand, type Hand } from '../_shared/house.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -25,9 +25,9 @@ const board = () => espnBoard(getJson)
 
 type HandRow = { id: string; game: string; wager: number; state: Hand; version: number }
 /** Finish a hand: log the round and pay what it returned. */
-async function finish(user: string, row: HandRow, state: Hand, returned: number) {
+async function finish(user: string, row: HandRow, state: Hand, returned: number, debit = 0) {
   const view = handView(state, true)
-  const { data: balance, error } = await admin.rpc('close_hand', { p_user: user, p_hand: row.id, p_version: row.version, p_state: state, p_returned: returned, p_outcome: { [row.game]: view } })
+  const { data: balance, error } = await admin.rpc('close_hand', { p_user: user, p_hand: row.id, p_version: row.version, p_state: state, p_returned: returned, p_outcome: { [row.game]: view }, p_debit: debit })
   return error ? fail(error.message.includes('hand_changed') ? 'That hand already finished' : 'Something went wrong') : json({ view, done: true, returned, balance })
 }
 
@@ -77,9 +77,11 @@ Deno.serve(async req => {
     if (typeof hand === 'string') return fail(hand)
     // A hand left open on this table closes first, as if the player had walked away from it.
     const { data: left } = await admin.from('hands').select('*').eq('user_id', user.id).eq('game', hand.game).eq('open', true)
-    for (const row of (left ?? []) as HandRow[]) await finish(user.id, row, row.state, closeHand(row.state, Number(row.wager)))
-    const { data: handId, error } = await admin.rpc('open_hand', { p_user: user.id, p_game: hand.game, p_wager: body.wager, p_state: hand })
+    for (const row of (left ?? []) as HandRow[]) { const c = closeHand(row.state, Number(row.wager)); await finish(user.id, row, c.hand, c.returned) }
+    const wager = handWager(hand, body)
+    const { data: handId, error } = await admin.rpc('open_hand', { p_user: user.id, p_game: hand.game, p_wager: wager, p_state: hand })
     if (error) return fail(nice(error))
+    if (handOver(hand)) { const res = await finish(user.id, { id: handId, game: hand.game, wager, state: hand, version: 0 }, hand, (hand as { returned: number }).returned); const j = await res.json(); return json({ ...j, handId }, res.status) }
     const { data: p } = await admin.from('profiles').select('balance').eq('id', user.id).single()
     return json({ handId, view: handView(hand, false), balance: p?.balance })
   }
@@ -88,10 +90,14 @@ Deno.serve(async req => {
     const { data: row } = await admin.from('hands').select('*').eq('id', body.handId).eq('user_id', user.id).eq('open', true).single()
     if (!row) return fail('That hand already finished')
     const r = row as HandRow
-    if (body.action === 'close') return finish(user.id, r, r.state, closeHand(r.state, Number(r.wager)))
+    if (body.action === 'close') { const c = closeHand(r.state, Number(r.wager)); return finish(user.id, r, c.hand, c.returned) }
     const m = moveHand(r.state, body, Number(r.wager))
     if (typeof m === 'string') return fail(m)
-    if (m.done) return finish(user.id, r, m.hand, m.returned)
+    if (m.done) return finish(user.id, r, m.hand, m.returned, m.debit)
+    if (m.debit) { // insurance, double or split: more chips on the felt
+      const { data: balance, error } = await admin.rpc('hand_debit', { p_user: user.id, p_hand: r.id, p_version: r.version, p_state: m.hand, p_debit: m.debit })
+      return error ? fail(nice(error)) : json({ view: handView(m.hand, false), done: false, returned: 0, balance })
+    }
     const { data: saved } = await admin.from('hands').update({ state: m.hand, version: r.version + 1 }).eq('id', r.id).eq('version', r.version).select('id')
     return saved?.length ? json({ view: handView(m.hand, false), done: false, returned: 0 }) : fail('Too fast, try again')
   }

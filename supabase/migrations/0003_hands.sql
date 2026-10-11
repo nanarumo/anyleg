@@ -1,4 +1,4 @@
--- Tables that take several taps (mines, video poker): the board or deck waits here between taps.
+-- Tables that take several taps (mines, video poker, blackjack): the board or deck waits here between taps.
 -- No select policy: players never read a hand's hidden state, only what the house function shows them.
 create table public.hands (
   id uuid primary key default gen_random_uuid(),
@@ -23,16 +23,27 @@ begin
   return hid;
 end $$;
 
-create function public.close_hand(p_user uuid, p_hand uuid, p_version int, p_state jsonb, p_returned numeric, p_outcome jsonb)
+-- p_debit: chips the last move added (a double or split that ends the hand).
+create function public.close_hand(p_user uuid, p_hand uuid, p_version int, p_state jsonb, p_returned numeric, p_outcome jsonb, p_debit numeric default 0)
 returns numeric language plpgsql security definer set search_path = public as $$
 declare w numeric; g text;
 begin
-  update hands set open = false, state = p_state, version = version + 1
+  update hands set open = false, state = p_state, version = version + 1, wager = wager + p_debit
     where id = p_hand and user_id = p_user and open and version = p_version
     returning wager, game into w, g;
   if w is null then raise exception 'hand_changed'; end if;
+  if p_debit > 0 then perform wallet_apply(p_user, -p_debit, 'round', p_hand::text); end if;
   insert into rounds (id, user_id, game, wager, returned, outcome) values (p_hand, p_user, g, w, p_returned, p_outcome);
   if p_returned > 0 then return wallet_apply(p_user, p_returned, 'payout', p_hand::text); end if;
   return (select balance from profiles where id = p_user);
 end $$;
-revoke execute on function public.open_hand, public.close_hand from public, anon, authenticated;
+-- A tap that adds chips mid-hand (insurance, double, split) and the hand goes on.
+create function public.hand_debit(p_user uuid, p_hand uuid, p_version int, p_state jsonb, p_debit numeric)
+returns numeric language plpgsql security definer set search_path = public as $
+begin
+  update hands set state = p_state, version = version + 1, wager = wager + p_debit
+    where id = p_hand and user_id = p_user and open and version = p_version;
+  if not found then raise exception 'hand_changed'; end if;
+  return wallet_apply(p_user, -p_debit, 'round', p_hand::text);
+end $;
+revoke execute on function public.open_hand, public.close_hand, public.hand_debit from public, anon, authenticated;

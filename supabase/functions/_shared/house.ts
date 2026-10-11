@@ -2,7 +2,7 @@
 // game math (src/logic.ts) so odds and payouts match the app exactly. Pure: no Supabase, no Deno, so
 // `node supabase/functions/_shared/house.test.ts` can check it.
 import {
-  CASINO_PICKS, CHAOS_BOOST, FLEX_MIN, PLINKO_RISK, applyTokens, bacReturn, boxStats, casinoPick, crashPoint, gradeCasino, gradeProp,
+  CASINO_PICKS, CHAOS_BOOST, bjOutcome, buster, canSplit, handValue, isBlackjack, luckyLadies, perfectPairs, playDealer, twentyOnePlus3, FLEX_MIN, PLINKO_RISK, applyTokens, bacReturn, boxStats, casinoPick, crashPoint, gradeCasino, gradeProp,
   gradeSport, minesMult, MINES_TILES, newShoe, placeMines, pokerHand, parlayDecimal, parseOdds, playBaccarat, plinkoPath, roulettePays, rouletteWins, roundText, settle, settleFlex,
   simRound, slotPays, spinReel, toDecimal, type Card, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side,
 } from '../../../src/logic.ts'
@@ -65,11 +65,20 @@ export function dealRound(req: RoundReq, rand = rng): Dealt | string {
 // ---- tables that take several taps: the board or deck stays on the server between them ----
 export type MinesHand = { game: 'mines'; count: number; mines: number[]; opened: number[] }
 export type PokerHand = { game: 'poker'; hand: Card[]; deck: Card[] }
-export type Hand = MinesHand | PokerHand
-export type Move = { tile?: number; cash?: boolean; hold?: boolean[] }
-export type Moved = { hand: Hand; done: boolean; returned: number }
+export type BjSpot = 'main' | 'pp' | 't3' | 'll' | 'bust'
+export type SideHit = { name: string; pays: number; returned: number }
+export type BjHand = {
+  game: 'blackjack'; shoe: Card[]; bets: Record<BjSpot, number>; phase: 'insurance' | 'play' | 'done'
+  hands: { cards: Card[]; wager: number; done: boolean; result?: Result }[]; active: number; dealer: Card[]
+  insurance: number; side: Partial<Record<BjSpot, SideHit>>; returned: number
+}
+export type Hand = MinesHand | PokerHand | BjHand
+export type Move = { tile?: number; cash?: boolean; hold?: boolean[]; bj?: 'hit' | 'stand' | 'double' | 'split' | 'insure' | 'noInsure' }
+/** debit: extra chips this move put on the felt (insurance, double, split). */
+export type Moved = { hand: Hand; done: boolean; returned: number; debit?: number }
 
-export function startHand(req: { game: string; wager: number; mines?: number }, rand = rng): Hand | string {
+export function startHand(req: { game: string; wager?: number; mines?: number; bets?: Record<BjSpot, number> }, rand = rng): Hand | string {
+  if (req?.game === 'blackjack') return bjStart(req.bets, rand)
   if (!cents(req?.wager)) return 'Bad wager'
   if (req.game === 'mines') {
     const n = req.mines ?? 0
@@ -88,6 +97,7 @@ const minesPaid = (h: MinesHand, wager: number) => (h.opened.some(t => h.mines.i
 
 /** One tap. Mines: { tile } or { cash }. Poker: { hold } draws once and ends the hand. */
 export function moveHand(h: Hand, move: Move, wager: number): Moved | string {
+  if (h.game === 'blackjack') return bjMove(h, move ?? {})
   if (h.game === 'mines') {
     if (move?.cash) return minesSafe(h) ? { hand: h, done: true, returned: minesPaid(h, wager) } : 'Pick a tile first'
     const t = move?.tile
@@ -104,15 +114,99 @@ export function moveHand(h: Hand, move: Move, wager: number): Moved | string {
 }
 
 /** A hand the player walked away from: mines banks the gems showing (or refunds an untouched board), poker stands on the deal. */
-export function closeHand(h: Hand, wager: number): number {
-  if (h.game === 'mines') return h.opened.length ? minesPaid(h, wager) : wager
-  return +(wager * pokerHand(h.hand).pays).toFixed(2)
+export function closeHand(h: Hand, wager: number): { hand: Hand; returned: number } {
+  if (h.game === 'blackjack') { const done = bjClose(h); return { hand: done, returned: done.returned } }
+  if (h.game === 'mines') return { hand: h, returned: h.opened.length ? minesPaid(h, wager) : wager }
+  return { hand: h, returned: +(wager * pokerHand(h.hand).pays).toFixed(2) }
 }
+/** A blackjack deal can end the hand on the spot (a blackjack on either side). */
+export const handOver = (h: Hand) => h.game === 'blackjack' && h.phase === 'done'
+/** What the player stakes to start a hand. */
+export const handWager = (h: Hand, req: { wager?: number }) => (h.game === 'blackjack' ? bjWager(h.bets) : Number(req.wager))
 
 /** What the player may see. Mine spots only once the board is over; never the deck. */
 export function handView(h: Hand, done: boolean) {
+  if (h.game === 'blackjack') {
+    const { shoe, ...seen } = h
+    return h.phase === 'done' ? seen : { ...seen, dealer: [h.dealer[0], { rank: '?', suit: '?' }] } // hole card stays face down
+  }
   if (h.game === 'poker') return { hand: h.hand }
   return { count: h.count, opened: h.opened, safe: minesSafe(h), boom: h.opened.some(t => h.mines.includes(t)), ...(done ? { mines: h.mines } : {}) }
+}
+
+// ---- blackjack: the same rules as Blackjack.tsx (dealer stands on 17, 3:2, split once, split aces get one card) ----
+const BJ_SPOTS: BjSpot[] = ['main', 'pp', 't3', 'll', 'bust']
+/** Everything on the felt when the hand is dealt (main + side bets). */
+export const bjWager = (b: Record<BjSpot, number>) => +BJ_SPOTS.reduce((t, k) => t + b[k], 0).toFixed(2)
+
+function bjStart(bets: Record<BjSpot, number> | undefined, rand: () => number): BjHand | string {
+  if (!bets || !cents(bets.main) || BJ_SPOTS.some(k => (bets[k] ?? 0) !== 0 && !cents(bets[k]))) return 'Bad bet'
+  const b = Object.fromEntries(BJ_SPOTS.map(k => [k, bets[k] ?? 0])) as Record<BjSpot, number>
+  const shoe = newShoe(6, rand)
+  const p = [shoe.pop()!, shoe.pop()!], d = [shoe.pop()!, shoe.pop()!]
+  const hit = (r: { name: string; pays: number }, amt: number): SideHit | undefined => (amt && r.pays ? { ...r, returned: amt * (r.pays + 1) } : undefined)
+  const side = { pp: hit(perfectPairs(p), b.pp), t3: hit(twentyOnePlus3([...p, d[0]]), b.t3), ll: hit(luckyLadies(p, isBlackjack(d)), b.ll) }
+  const h: BjHand = { game: 'blackjack', shoe, bets: b, phase: 'play', hands: [{ cards: p, wager: b.main, done: false }], active: 0, dealer: d, insurance: 0, side, returned: 0 }
+  if (d[0].rank === 'A' && !isBlackjack(p)) return { ...h, phase: 'insurance' }
+  return isBlackjack(p) || isBlackjack(d) ? bjFinish(h) : h
+}
+
+/** The dealer plays, every hand is graded and the side bets are paid. */
+function bjFinish(h: BjHand): BjHand {
+  const shoe = [...h.shoe], d = [...h.dealer]
+  const split = h.hands.length > 1
+  const live = h.hands.some(x => handValue(x.cards) <= 21) && !(!split && isBlackjack(h.hands[0].cards))
+  if (live || (h.bets.bust > 0 && !isBlackjack(d))) playDealer(d, shoe)
+  const outcomes = h.hands.map(x => bjOutcome(x.cards, d, x.wager, split))
+  const side = { ...h.side }
+  const b = buster(d)
+  if (h.bets.bust && b.pays) side.bust = { ...b, returned: h.bets.bust * (b.pays + 1) }
+  const sides = Object.values(side).reduce((t, s) => t + (s?.returned ?? 0), 0)
+  const insurance = isBlackjack(d) ? h.insurance * 3 : 0 // insurance pays 2 to 1
+  const returned = +(outcomes.reduce((t, o) => t + o.returned, 0) + sides + insurance).toFixed(2)
+  return { ...h, shoe, dealer: d, side, phase: 'done', hands: h.hands.map((x, i) => ({ ...x, done: true, result: outcomes[i].result })), returned }
+}
+
+/** Walking away: no insurance, every open hand stands. */
+const bjClose = (h: BjHand) => bjFinish({ ...h, hands: h.hands.map(x => ({ ...x, done: true })) })
+
+/** Move to the next unfinished hand, or let the dealer play. */
+function bjAdvance(h: BjHand): BjHand {
+  const next = h.hands.findIndex(x => !x.done)
+  if (next < 0) return bjFinish(h)
+  if (handValue(h.hands[next].cards) >= 21) return bjAdvance({ ...h, hands: h.hands.map((x, i) => (i === next ? { ...x, done: true } : x)) })
+  return { ...h, active: next }
+}
+
+function bjMove(h: BjHand, move: Move): Moved | string {
+  const out = (hand: BjHand, debit = 0): Moved => ({ hand, done: hand.phase === 'done', returned: hand.phase === 'done' ? hand.returned : 0, debit })
+  if (h.phase === 'insurance') {
+    if (move.bj !== 'insure' && move.bj !== 'noInsure') return 'Take or skip insurance'
+    const ins = move.bj === 'insure' ? Math.floor(h.hands[0].wager / 2) : 0
+    const next: BjHand = { ...h, insurance: ins, phase: 'play' }
+    return out(isBlackjack(h.dealer) ? bjFinish(next) : next, ins)
+  }
+  if (h.phase !== 'play') return 'Hand is over'
+  const shoe = [...h.shoe], cur = h.hands[h.active]
+  const set = (x: Partial<BjHand['hands'][number]>) => h.hands.map((y, i) => (i === h.active ? { ...y, ...x } : y))
+  switch (move.bj) {
+    case 'hit': {
+      const cards = [...cur.cards, shoe.pop()!]
+      const next = { ...h, shoe, hands: set({ cards, done: handValue(cards) >= 21 }) }
+      return out(handValue(cards) >= 21 ? bjAdvance(next) : next)
+    }
+    case 'stand': return out(bjAdvance({ ...h, hands: set({ done: true }) }))
+    case 'double':
+      if (cur.cards.length !== 2) return 'Double on your first two cards'
+      return out(bjAdvance({ ...h, shoe, hands: set({ cards: [...cur.cards, shoe.pop()!], wager: cur.wager * 2, done: true }) }), cur.wager)
+    case 'split': {
+      if (h.hands.length > 1 || !canSplit(cur.cards)) return 'That hand can not be split'
+      const [a, b] = cur.cards, aces = a.rank === 'A'
+      const hands = [{ cards: [a, shoe.pop()!], wager: cur.wager, done: aces }, { cards: [b, shoe.pop()!], wager: cur.wager, done: aces }]
+      return out(bjAdvance({ ...h, shoe, hands, active: 0 }), cur.wager)
+    }
+  }
+  return 'Unknown move'
 }
 
 // ---- tickets ----

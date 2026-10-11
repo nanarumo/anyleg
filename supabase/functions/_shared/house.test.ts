@@ -51,10 +51,25 @@ const cashed = moveHand(m1.hand, { cash: true }, 10) as any
 assert.equal(cashed.done, true); assert.equal(cashed.returned, 11) // 1.10x: 0.97 × 25/22, floored
 assert.equal((moveHand(m1.hand, { tile: mh.mines[0] }, 10) as any).returned, 0)
 assert.equal(typeof moveHand(m1.hand, { tile: safeTile }, 10), 'string') // same tile twice
-assert.equal(closeHand(mh, 10), 10) // untouched board: refund
+assert.equal(closeHand(mh, 10).returned, 10) // untouched board: refund
 // Poker: one draw ends the hand; held cards stay.
 const ph = startHand({ game: 'poker', wager: 5 }) as any
 assert.equal(ph.hand.length, 5); assert.equal(ph.deck.length, 47)
 const drawn = moveHand(ph, { hold: [true, true, false, false, false] }, 5) as any
 assert.deepEqual(drawn.hand.hand.slice(0, 2), ph.hand.slice(0, 2)); assert.equal(drawn.done, true)
+// Blackjack: the hole card stays hidden, chips added mid-hand are charged, and every hand ends graded.
+for (let i = 0; i < 300; i++) {
+  let h = startHand({ game: 'blackjack', bets: { main: 10, pp: 1, t3: 0, ll: 0, bust: 1 } }) as any
+  if (h.phase === 'insurance') h = (moveHand(h, { bj: 'insure' }, 0) as any).hand
+  if (h.phase === 'play') {
+    assert.equal((handView(h, false) as any).dealer[1].rank, '?')
+    const d = moveHand(h, { bj: h.hands[0].cards.length === 2 ? 'double' : 'stand' }, 0) as any
+    assert.equal(d.debit, 10)
+    h = d.hand
+  }
+  assert.equal(h.phase, 'done')
+  assert.ok(h.hands.every((x: any) => x.result))
+  assert.ok(h.returned >= 0 && h.returned <= 20 * 2.5 + 26 + 251 + 15)
+}
+assert.equal(typeof startHand({ game: 'blackjack', bets: { main: 0 } as any }), 'string')
 console.log('house ok')
