@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { POKER_PAYTABLE, gradeCasino, money, newShoe, pokerHand, type Card } from './logic.ts'
-import { adjustBalance, logRound, useStore } from './store.ts'
+import { adjustBalance, logRound, serverHand, useStore } from './store.ts'
+import { SERVER } from './server.ts'
 import { CasinoLegs, ChipRack, StatBar, WinCelebration, LegDoneButtons, legText, type LegPlay } from './Casino.tsx'
 import { CardView } from './Cards.tsx'
 
@@ -21,6 +22,9 @@ export default function VideoPoker({ leg }: { leg?: LegPlay }) {
   const [lastWin, setLastWin] = useState(0)
   const [party, setParty] = useState<{ amount: number; title: string; sub: string }>()
   const deals = useRef(0)
+  const handId = useRef<string>(undefined) // server mode: the deck stays on the server
+  const busy = useRef(false)
+  const server = SERVER && !leg
 
   const latest = useRef({ phase, hand, wager })
   latest.current = { phase, hand, wager }
@@ -28,28 +32,49 @@ export default function VideoPoker({ leg }: { leg?: LegPlay }) {
   useEffect(() => () => {
     const l = latest.current
     if (l.phase !== 'hold') return
+    if (handId.current) { serverHand({ action: 'close', handId: handId.current }); logRound('poker', l.wager, l.wager * pokerHand(l.hand).pays, `${pokerHand(l.hand).name} (left before draw)`); return }
     const r = pokerHand(l.hand)
     if (leg) leg.onRound({ poker: { pays: r.pays } })
     else { adjustBalance(l.wager * r.pays); logRound('poker', l.wager, l.wager * r.pays, `${r.name} (left before draw)`) }
   }, [])
 
-  const deal = () => {
-    if (!leg && !adjustBalance(-bet)) return
-    deck.current = newShoe(1)
-    const h = Array.from({ length: 5 }, () => deck.current.pop()!)
+  const deal = async () => {
+    let h: Card[]
+    if (server) {
+      if (busy.current) return
+      busy.current = true
+      const r = await serverHand<{ hand: Card[] }>({ action: 'start', game: 'poker', wager: bet })
+      busy.current = false
+      if (typeof r === 'string') return alert(r)
+      handId.current = r.handId
+      h = r.view.hand
+    } else {
+      if (!leg && !adjustBalance(-bet)) return
+      deck.current = newShoe(1)
+      h = Array.from({ length: 5 }, () => deck.current.pop()!)
+    }
     deals.current++
     setHand(h); setKeys(h.map((_, i) => `${deals.current}-${i}`)); setHeld([false, false, false, false, false])
     setWager(leg ? 0 : bet); setResult(undefined); setPhase('hold')
   }
 
-  const draw = () => {
-    const h = hand.map((c, i) => (held[i] ? c : deck.current.pop()!))
+  const draw = async () => {
+    let h = hand.map((c, i) => (held[i] ? c : deck.current.pop()!))
+    if (server) {
+      if (busy.current || !handId.current) return
+      busy.current = true
+      const s = await serverHand<{ hand: Card[] }>({ action: 'move', handId: handId.current, hold: held })
+      busy.current = false
+      if (typeof s === 'string') return alert(s)
+      handId.current = undefined
+      h = s.view.hand
+    }
     const r = pokerHand(h)
     setHand(h)
     setKeys(keys.map((k, i) => (held[i] ? k : `${k}-d`)))
     setPhase('done')
     if (!leg) {
-      adjustBalance(wager * r.pays)
+      if (!server) adjustBalance(wager * r.pays)
       logRound('poker', wager, wager * r.pays, r.name)
     }
     setTimeout(() => {

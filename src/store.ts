@@ -765,3 +765,12 @@ export async function serverRound<O>(game: CasinoGame, req: Record<string, unkno
     return r
   } catch (e) { return (e as Error).message }
 }
+
+/** Mines and video poker: the board or deck stays on the server between taps (house actions start, move, close). */
+export async function serverHand<V>(body: Record<string, unknown>): Promise<{ handId?: string; view: V; done?: boolean; returned?: number } | string> {
+  try {
+    const r = await house<{ handId?: string; view: V; done?: boolean; returned?: number }>(body)
+    if (Number.isFinite(r.balance)) set({ balance: r.balance, ...(body.action === 'start' ? spend(Number(body.wager)) : {}) })
+    return r
+  } catch (e) { return (e as Error).message }
+}

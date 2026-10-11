@@ -1,6 +1,6 @@
 // node supabase/functions/_shared/house.test.ts
 import assert from 'node:assert/strict'
-import { dealRound, espnBoard, grade, gradeSports, playLeg, priceTickets, type Leg } from './house.ts'
+import { closeHand, handView, moveHand, startHand, dealRound, espnBoard, grade, gradeSports, playLeg, priceTickets, type Leg } from './house.ts'
 
 const fixed = (x: number) => () => x
 
@@ -41,4 +41,20 @@ const summary = (completed: boolean) => async () => ({ header: { competitions: [
 assert.equal(await gradeSports(legs, summary(false)), undefined)
 const graded = await gradeSports(legs, summary(true))
 assert.equal(graded![0].result, 'won'); assert.equal(graded![1].result, 'pending') // casino leg untouched
+// Mines: the board stays hidden until it's over; cashing pays the multiplier.
+const mh = startHand({ game: 'mines', wager: 10, mines: 3 }) as any
+assert.equal(handView(mh, false).mines, undefined)
+const safeTile = [...Array(25).keys()].find(t => !mh.mines.includes(t))!
+const m1 = moveHand(mh, { tile: safeTile }, 10) as any
+assert.equal(m1.done, false)
+const cashed = moveHand(m1.hand, { cash: true }, 10) as any
+assert.equal(cashed.done, true); assert.equal(cashed.returned, 11) // 1.10x: 0.97 × 25/22, floored
+assert.equal((moveHand(m1.hand, { tile: mh.mines[0] }, 10) as any).returned, 0)
+assert.equal(typeof moveHand(m1.hand, { tile: safeTile }, 10), 'string') // same tile twice
+assert.equal(closeHand(mh, 10), 10) // untouched board: refund
+// Poker: one draw ends the hand; held cards stay.
+const ph = startHand({ game: 'poker', wager: 5 }) as any
+assert.equal(ph.hand.length, 5); assert.equal(ph.deck.length, 47)
+const drawn = moveHand(ph, { hold: [true, true, false, false, false] }, 5) as any
+assert.deepEqual(drawn.hand.hand.slice(0, 2), ph.hand.slice(0, 2)); assert.equal(drawn.done, true)
 console.log('house ok')

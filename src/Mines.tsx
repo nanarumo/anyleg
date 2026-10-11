@@ -1,6 +1,9 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { MINES_PICKS, MINES_TILES, gradeCasino, minesMult, money, placeMines } from './logic.ts'
-import { adjustBalance, logRound, useStore } from './store.ts'
+import { adjustBalance, logRound, serverHand, useStore } from './store.ts'
+import { SERVER } from './server.ts'
+
+type View = { opened: number[]; safe: number; boom: boolean; mines?: number[] }
 import { CasinoLegs, ChipRack, StatBar, WinCelebration, LegDoneButtons, legText, type LegPlay } from './Casino.tsx'
 import { sfx } from './sound.ts'
 
@@ -19,7 +22,9 @@ export default function Mines({ leg }: { leg?: LegPlay }) {
   const [lastWin, setLastWin] = useState(0)
   const [legResult, setLegResult] = useState<{ text: string; r: string }>()
   const [party, setParty] = useState<{ amount: number; title: string; sub: string }>()
-  const live = useRef<{ stake: number; safe: number; mines: number }>(undefined)
+  const live = useRef<{ stake: number; safe: number; mines: number; handId?: string }>(undefined)
+  const busy = useRef(false)
+  const server = SERVER && !leg // the mines stay hidden on the server; each tap asks it
   const [boomAt, setBoomAt] = useState<number>()
   // Explosion: every tile flies away from the mine you hit, nearer ones first. Random spin/distance picked once per blast.
   const blast = useMemo(() => {
@@ -38,6 +43,7 @@ export default function Mines({ leg }: { leg?: LegPlay }) {
     const r = live.current
     if (!r) return
     if (leg) leg.onRound({ mines: { safe: r.safe } }) // stopping early is a miss unless the target was already cleared
+    else if (r.handId) serverHand({ action: 'close', handId: r.handId }) // the server banks the gems (or refunds an untouched board)
     else if (r.safe > 0) { const paid = +(r.stake * minesMult(r.mines, r.safe)).toFixed(2); adjustBalance(paid); logRound('mines', r.stake, paid, `Left the table · ${r.safe} gems`) }
     else adjustBalance(r.stake) // no tile picked yet, nothing was risked: refund
   }, [])
@@ -46,10 +52,18 @@ export default function Mines({ leg }: { leg?: LegPlay }) {
   const mult = minesMult(mines, safe)
   const nextMult = minesMult(mines, safe + 1)
 
-  const start = () => {
-    if (!leg && (!bet || !adjustBalance(-bet))) return
-    setBoard(placeMines(mines)); setOpen([]); setPhase('play'); setLegResult(undefined); setBoomAt(undefined)
-    live.current = { stake: leg ? 0 : bet, safe: 0, mines }
+  const start = async () => {
+    let handId: string | undefined
+    if (server) {
+      if (!bet || busy.current) return
+      busy.current = true
+      const r = await serverHand<View>({ action: 'start', game: 'mines', wager: bet, mines })
+      busy.current = false
+      if (typeof r === 'string') return alert(r)
+      handId = r.handId
+    } else if (!leg && (!bet || !adjustBalance(-bet))) return
+    setBoard(server ? new Set() : placeMines(mines)); setOpen([]); setPhase('play'); setLegResult(undefined); setBoomAt(undefined)
+    live.current = { stake: leg ? 0 : bet, safe: 0, mines, handId }
   }
 
   const finishLeg = (gems: number) => {
@@ -60,8 +74,23 @@ export default function Mines({ leg }: { leg?: LegPlay }) {
     setLegResult({ text: legText(g), r: g })
   }
 
-  const reveal = (i: number) => {
+  const reveal = async (i: number) => {
     if (phase !== 'play' || !board || open.includes(i)) return
+    if (server) {
+      const r0 = live.current
+      if (!r0?.handId || busy.current) return
+      busy.current = true
+      const r = await serverHand<View>({ action: 'move', handId: r0.handId, tile: i })
+      busy.current = false
+      if (typeof r === 'string') return alert(r)
+      setOpen(r.view.opened)
+      if (r.view.mines) setBoard(new Set(r.view.mines))
+      if (r.view.boom) { sfx.crash(); setPhase('boom'); setBoomAt(i); logRound('mines', r0.stake, 0, `Mine after ${safe} gems`); live.current = undefined; return }
+      sfx.chip()
+      live.current = { ...r0, safe: r.view.safe }
+      if (r.done) cashed(r.view.safe, r.returned ?? 0)
+      return
+    }
     const next = [...open, i]
     setOpen(next)
     if (board.has(i)) {
@@ -78,13 +107,27 @@ export default function Mines({ leg }: { leg?: LegPlay }) {
     else if (gems === MINES_TILES - mines) cash(gems)
   }
 
-  const cash = (gems = safe) => {
+  const cash = async (gems = safe) => {
     const r = live.current
     if (!r || leg || !gems) return
+    if (server) {
+      if (busy.current) return
+      busy.current = true
+      const s = await serverHand<View>({ action: 'move', handId: r.handId, cash: true })
+      busy.current = false
+      if (typeof s === 'string') return alert(s)
+      if (s.view.mines) setBoard(new Set(s.view.mines))
+      return cashed(gems, s.returned ?? 0)
+    }
+    adjustBalance(+(r.stake * minesMult(mines, gems)).toFixed(2))
+    cashed(gems, +(r.stake * minesMult(mines, gems)).toFixed(2))
+  }
+
+  const cashed = (gems: number, paid: number) => {
+    const r = live.current!
     live.current = undefined
     const m = minesMult(mines, gems)
-    const paid = +(r.stake * m).toFixed(2)
-    adjustBalance(paid); logRound('mines', r.stake, paid, `${gems} gems · ${m}x`)
+    logRound('mines', r.stake, paid, `${gems} gems · ${m}x`)
     setPhase('cashed'); setLastWin(paid); sfx.win()
     if (m >= 5) setParty({ amount: paid, title: 'GEM HUNTER!', sub: `${gems} gems with ${mines} mines · ${m}x` })
   }

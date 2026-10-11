@@ -3,10 +3,13 @@
 //   bet:   { legs, stake, mode, flex, chaos }  priced here, stake taken  -> { ids, tickets, balance }
 //   leg:   { betId, legId }             free round for a casino leg      -> { round, note, legs, status, payout, balance }
 //   cancel: { betId }                  undo a ticket within a minute, before anything is graded -> { balance }
+//   start: { game: mines|poker, wager, mines? }  a hand that takes several taps -> { handId, view, balance }
+//   move:  { handId, tile | cash | hold }       one tap                  -> { view, done, returned, balance? }
+//   close: { handId }                           walk away from a hand    -> { view, returned, balance }
 //   settle: {}                          grade open sports legs from finals -> { balance }
 // ponytail: settle runs when the app asks (it polls every 30s); a cron would settle tickets for players who are away
 import { createClient } from 'npm:@supabase/supabase-js@2'
-import { dealRound, espnBoard, grade, gradeSports, playLeg, priceTickets } from '../_shared/house.ts'
+import { closeHand, dealRound, espnBoard, grade, gradeSports, handView, moveHand, playLeg, priceTickets, startHand, type Hand } from '../_shared/house.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -19,6 +22,14 @@ const nice = (e: { message?: string } | null) => (e?.message?.includes('insuffic
 const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 const getJson = async (url: string) => { const r = await fetch(url); if (!r.ok) throw new Error(String(r.status)); return r.json() }
 const board = () => espnBoard(getJson)
+
+type HandRow = { id: string; game: string; wager: number; state: Hand; version: number }
+/** Finish a hand: log the round and pay what it returned. */
+async function finish(user: string, row: HandRow, state: Hand, returned: number) {
+  const view = handView(state, true)
+  const { data: balance, error } = await admin.rpc('close_hand', { p_user: user, p_hand: row.id, p_version: row.version, p_state: state, p_returned: returned, p_outcome: { [row.game]: view } })
+  return error ? fail(error.message.includes('hand_changed') ? 'That hand already finished' : 'Something went wrong') : json({ view, done: true, returned, balance })
+}
 
 Deno.serve(async req => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
@@ -59,6 +70,30 @@ Deno.serve(async req => {
       p_old: bet.legs, p_legs: played.legs, p_status: status, p_payout: payout,
     })
     return error ? fail(nice(error)) : json({ round: played.round, note: leg.note, legs: played.legs, status, payout, balance })
+  }
+
+  if (body.action === 'start') {
+    const hand = startHand(body)
+    if (typeof hand === 'string') return fail(hand)
+    // A hand left open on this table closes first, as if the player had walked away from it.
+    const { data: left } = await admin.from('hands').select('*').eq('user_id', user.id).eq('game', hand.game).eq('open', true)
+    for (const row of (left ?? []) as HandRow[]) await finish(user.id, row, row.state, closeHand(row.state, Number(row.wager)))
+    const { data: handId, error } = await admin.rpc('open_hand', { p_user: user.id, p_game: hand.game, p_wager: body.wager, p_state: hand })
+    if (error) return fail(nice(error))
+    const { data: p } = await admin.from('profiles').select('balance').eq('id', user.id).single()
+    return json({ handId, view: handView(hand, false), balance: p?.balance })
+  }
+
+  if (body.action === 'move' || body.action === 'close') {
+    const { data: row } = await admin.from('hands').select('*').eq('id', body.handId).eq('user_id', user.id).eq('open', true).single()
+    if (!row) return fail('That hand already finished')
+    const r = row as HandRow
+    if (body.action === 'close') return finish(user.id, r, r.state, closeHand(r.state, Number(r.wager)))
+    const m = moveHand(r.state, body, Number(r.wager))
+    if (typeof m === 'string') return fail(m)
+    if (m.done) return finish(user.id, r, m.hand, m.returned)
+    const { data: saved } = await admin.from('hands').update({ state: m.hand, version: r.version + 1 }).eq('id', r.id).eq('version', r.version).select('id')
+    return saved?.length ? json({ view: handView(m.hand, false), done: false, returned: 0 }) : fail('Too fast, try again')
   }
 
   if (body.action === 'cancel') {

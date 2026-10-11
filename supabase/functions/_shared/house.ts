@@ -3,8 +3,8 @@
 // `node supabase/functions/_shared/house.test.ts` can check it.
 import {
   CASINO_PICKS, CHAOS_BOOST, FLEX_MIN, PLINKO_RISK, applyTokens, bacReturn, boxStats, casinoPick, crashPoint, gradeCasino, gradeProp,
-  gradeSport, newShoe, parlayDecimal, parseOdds, playBaccarat, plinkoPath, roulettePays, rouletteWins, roundText, settle, settleFlex,
-  simRound, slotPays, spinReel, toDecimal, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side,
+  gradeSport, minesMult, MINES_TILES, newShoe, placeMines, pokerHand, parlayDecimal, parseOdds, playBaccarat, plinkoPath, roulettePays, rouletteWins, roundText, settle, settleFlex,
+  simRound, slotPays, spinReel, toDecimal, type Card, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side,
 } from '../../../src/logic.ts'
 
 /** Uniform [0, 1) from the OS's crypto RNG. Players can't see or steer it. */
@@ -60,6 +60,59 @@ export function dealRound(req: RoundReq, rand = rng): Dealt | string {
     }
   }
   return 'Unknown game'
+}
+
+// ---- tables that take several taps: the board or deck stays on the server between them ----
+export type MinesHand = { game: 'mines'; count: number; mines: number[]; opened: number[] }
+export type PokerHand = { game: 'poker'; hand: Card[]; deck: Card[] }
+export type Hand = MinesHand | PokerHand
+export type Move = { tile?: number; cash?: boolean; hold?: boolean[] }
+export type Moved = { hand: Hand; done: boolean; returned: number }
+
+export function startHand(req: { game: string; wager: number; mines?: number }, rand = rng): Hand | string {
+  if (!cents(req?.wager)) return 'Bad wager'
+  if (req.game === 'mines') {
+    const n = req.mines ?? 0
+    if (!Number.isInteger(n) || n < 1 || n >= MINES_TILES) return 'Bad mine count'
+    return { game: 'mines', count: n, mines: [...placeMines(n, rand)], opened: [] }
+  }
+  if (req.game === 'poker') {
+    const deck = newShoe(1, rand)
+    return { game: 'poker', hand: deck.splice(-5).reverse(), deck }
+  }
+  return 'Unknown game'
+}
+
+const minesSafe = (h: MinesHand) => h.opened.filter(t => !h.mines.includes(t)).length
+const minesPaid = (h: MinesHand, wager: number) => (h.opened.some(t => h.mines.includes(t)) ? 0 : +(wager * minesMult(h.count, minesSafe(h))).toFixed(2))
+
+/** One tap. Mines: { tile } or { cash }. Poker: { hold } draws once and ends the hand. */
+export function moveHand(h: Hand, move: Move, wager: number): Moved | string {
+  if (h.game === 'mines') {
+    if (move?.cash) return minesSafe(h) ? { hand: h, done: true, returned: minesPaid(h, wager) } : 'Pick a tile first'
+    const t = move?.tile
+    if (!Number.isInteger(t) || t! < 0 || t! >= MINES_TILES || h.opened.includes(t!)) return 'Bad tile'
+    const hand = { ...h, opened: [...h.opened, t!] }
+    const done = h.mines.includes(t!) || minesSafe(hand) === MINES_TILES - h.count
+    return { hand, done, returned: done ? minesPaid(hand, wager) : 0 }
+  }
+  const hold = move?.hold
+  if (!Array.isArray(hold) || hold.length !== 5) return 'Pick cards to hold'
+  const deck = [...h.deck]
+  const hand = { ...h, hand: h.hand.map((c, i) => (hold[i] ? c : deck.pop()!)), deck }
+  return { hand, done: true, returned: +(wager * pokerHand(hand.hand).pays).toFixed(2) }
+}
+
+/** A hand the player walked away from: mines banks the gems showing (or refunds an untouched board), poker stands on the deal. */
+export function closeHand(h: Hand, wager: number): number {
+  if (h.game === 'mines') return h.opened.length ? minesPaid(h, wager) : wager
+  return +(wager * pokerHand(h.hand).pays).toFixed(2)
+}
+
+/** What the player may see. Mine spots only once the board is over; never the deck. */
+export function handView(h: Hand, done: boolean) {
+  if (h.game === 'poker') return { hand: h.hand }
+  return { count: h.count, opened: h.opened, safe: minesSafe(h), boom: h.opened.some(t => h.mines.includes(t)), ...(done ? { mines: h.mines } : {}) }
 }
 
 // ---- tickets ----
