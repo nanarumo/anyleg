@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 import { SPIN_PRIZES, spinIndex, CHAOS_BOOST, simRound, applyTokens, gradeCasino, roundText, parlayDecimal, settleFlex, FLEX_MIN, toDecimal, uid, setOddsFormat, settle, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side } from './logic.ts'
-import { CHALLENGES, newlyCompleted, type SkinId } from './challenges.ts'
+import { CHALLENGES, challengeBoost, newlyCompleted, type SkinId } from './challenges.ts'
 import { PRIZES, weekId } from './season.ts'
 import { SERVER, house, pull, type ServerBet } from './server.ts'
 import { MAX_LEVEL, MAX_PRESTIGE, XP_PER_LEG_HIT, levelOf, prestigeRewards, rewardsAt, xpForCasinoWin, xpForTicket, type Reward } from './progression.ts'
@@ -95,6 +95,8 @@ type State = {
   claimedLevels: string[] // "<prestige>:<level>" level rewards already collected
   challengesClaimed: string[] // completed challenges whose XP/skin was collected
   seasonsClaimed?: string[] // weekly leaderboard prizes collected, by week id
+  code?: string // server mode: this player's referral code
+  referrals?: number // server mode: how many joined with it
   prestigeStartedAt?: number // challenges only count play since this moment
   prestigeUp?: { prestige: number; at: number; rewards: Reward[] } // newest prestige, for the celebration
   squad?: Squad
@@ -190,28 +192,30 @@ export const unclaimedLevels = (s: State = state) => {
 export const unclaimedChallenges = (s: State = state) => s.challengesDone.filter(id => !s.challengesClaimed.includes(id))
 
 export function claimLevel(level: number) {
+  if (SERVER) return claimLevelsServer() // the server collects every level reached
   if (level > levelOf(state.xp).level || state.claimedLevels.includes(levelKey(level))) return
   const granted = grant(rewardsAt(level, state.prestige), state.balance, { ...state.inv }, [...state.unlocked], [...state.txns])
   set({ ...granted, claimedLevels: [...state.claimedLevels, levelKey(level)] })
 }
 export function claimAllLevels() {
+  if (SERVER) return claimLevelsServer()
   const levels = unclaimedLevels()
   if (!levels.length) return
   const granted = grant(levels.flatMap(l => rewardsAt(l, state.prestige)), state.balance, { ...state.inv }, [...state.unlocked], [...state.txns])
   set({ ...granted, claimedLevels: [...state.claimedLevels, ...levels.map(levelKey)] })
 }
-/** Every challenge also pays an odds boost token: 50% for the big ones (600+ XP), 25% otherwise. */
-export const challengeBoost = (c: { xp: number }): BoostKey => (c.xp >= 600 ? 'boost50' : 'boost25')
+export { challengeBoost }
 /** Collect a finished challenge: its XP (which may level you up), its skin and its boost token. */
 export function claimChallenge(id: string) {
   const c = CHALLENGES.find(x => x.id === id)
   if (!c || !state.challengesDone.includes(id) || state.challengesClaimed.includes(id)) return
+  if (SERVER) return claimChallengeServer(id)
   const unlocked = c.skin && !state.unlocked.includes(`skin:${c.skin}`) ? [...state.unlocked, `skin:${c.skin}`] : state.unlocked
   const token = challengeBoost(c)
   set(withXp({ challengesClaimed: [...state.challengesClaimed, id], unlocked, inv: { ...state.inv, [token]: state.inv[token] + 1 } }, c.xp))
 }
-export function claimAllChallenges() {
-  for (const id of unclaimedChallenges()) claimChallenge(id)
+export async function claimAllChallenges() {
+  for (const id of unclaimedChallenges()) await claimChallenge(id)
 }
 
 /** Apply a list of rewards to wallet, inventory and unlocks. */
@@ -238,7 +242,8 @@ export const challengeHistory = (s: { bets: Bet[]; rounds: CasinoRound[]; presti
  * avatars, frames) and all challenge progress is wiped, to be earned again through challenges in the new
  * prestige. Money and reward tokens are kept. The prestige's own avatar comes with the entry pack.
  */
-export function enterPrestige(): string | undefined {
+export function enterPrestige(): string | undefined | Promise<string | undefined> {
+  if (SERVER) return prestigeServer()
   if (levelOf(state.xp).level < MAX_LEVEL) return `Reach level ${MAX_LEVEL} first`
   if (state.prestige >= MAX_PRESTIGE) return 'You are at the highest prestige'
   claimAllLevels() // don't leave this prestige's track rewards behind
@@ -306,9 +311,11 @@ export const REFERRAL_MILESTONES = [
   { count: 5, label: 'Recruiter frame + $1,000' },
 ]
 /** Stable, readable code: name letters + a slice of the id, e.g. NICK-4F2A. */
-export const codeOf = (a: Account) => `${a.name.replace(/[^a-z0-9]/gi, '').toUpperCase().slice(0, 6) || 'ANY'}-${a.id.replace(/-/g, '').slice(0, 4).toUpperCase()}`
+export const codeOf = (a: Account) => (SERVER && a.id === accounts.current && state.code) || `${a.name.replace(/[^a-z0-9]/gi, '').toUpperCase().slice(0, 6) || 'ANY'}-${a.id.replace(/-/g, '').slice(0, 4).toUpperCase()}`
 const findByCode = (code: string) => accounts.list.find(a => codeOf(a) === code.trim().toUpperCase())
 export const referralsOf = (id: string) => accounts.list.filter(a => a.referredBy === id)
+/** How many joined with this account's code (server mode counts every device). */
+export const referralCount = (id: string) => (SERVER && id === accounts.current ? state.referrals ?? 0 : referralsOf(id).length)
 
 /** Change another account's saved wallet (it isn't loaded right now). */
 function creditOther(id: string, apply: (s: State) => State) {
@@ -345,7 +352,8 @@ function applyReferral(referrer: Account) {
 }
 
 /** Enter a friend's code after signing up (once, within 7 days of creating the account). */
-export function redeemReferral(code: string): string | undefined {
+export function redeemReferral(code: string): string | undefined | Promise<string | undefined> {
+  if (SERVER) return redeemServer(code)
   const me = accounts.list.find(a => a.id === accounts.current)
   if (!me) return 'Create an account first'
   if (me.referredBy) return 'You already used a referral code'
@@ -396,6 +404,7 @@ export function netBetween(id: string, from: number, to: number) {
 
 /** Collect a weekly leaderboard prize (place 0 = 1st). */
 export function claimSeason(week: string, place: number) {
+  if (SERVER) return claimSeasonServer(week)
   const prize = PRIZES[place]
   if (!prize || state.seasonsClaimed?.includes(week)) return
   const unlocked = state.unlocked.includes(`skin:${prize.skin}`) ? state.unlocked : [...state.unlocked, `skin:${prize.skin}`]
@@ -582,8 +591,7 @@ export function placeBet(stake: number, mode: 'parlay' | 'singles' = 'parlay', o
   const boost = groups.length === 1 && opts.boost && state.inv[opts.boost] > 0 ? opts.boost : undefined // parlays and single straight bets
   const insure = parlay && opts.insure && slip.length >= 4 && state.inv.insurance > 0
   if (SERVER) { // the server rolls the chaos leg itself
-    if (boost || insure) return 'Boost and insurance tokens are coming back soon'
-    return serverBet({ legs: state.slip.map(({ moved, ...l }) => l), stake, mode, flex, chaos: !!opts.chaos }, cost, true)
+    return serverBet({ legs: state.slip.map(({ moved, ...l }) => l), stake, mode, flex, chaos: !!opts.chaos, boost, insure }, cost, true)
   }
   const tickets: Bet[] = groups.map(legs => {
     const { dec } = parlayDecimal(legs)
@@ -606,7 +614,8 @@ export function placeBet(stake: number, mode: 'parlay' | 'singles' = 'parlay', o
 /** Sell an open ticket for `amount` (computed from live chances by the caller). */
 export function cashOut(betId: string, amount: number) {
   const b = state.bets.find(x => x.id === betId)
-  if (!b || b.status !== 'pending' || !(amount > 0) || b.server) return // ponytail: server tickets can't cash out until the server prices it
+  if (b?.server) return cashOutServer(betId) // the server prices it again and pays its own figure
+  if (!b || b.status !== 'pending' || !(amount > 0)) return
   const status: Result = amount > b.stake ? 'won' : amount < b.stake ? 'lost' : 'push'
   set({ balance: +(state.balance + amount).toFixed(2), bets: state.bets.map(x => (x.id === betId ? { ...x, status, payout: amount, cashedOut: true } : x)) })
 }
@@ -668,15 +677,17 @@ export function squadNewWeek(force = false) {
   const last = q?.betId && state.bets.find(b => b.id === q.betId)
   if (q && (q.week !== weekId() || (force && (!last || last.status !== 'pending')))) set({ squad: { ...q, week: weekId(), picks: q.members.map(() => null), betId: undefined } })
 }
-export function fundSquad(amount: number): string | undefined {
+export function fundSquad(amount: number): string | undefined | Promise<string | undefined> {
   const q = state.squad
   if (!q || !(amount > 0)) return 'Pick an amount'
+  if (SERVER) return squadServer('fund', amount)
   if (!adjustBalance(-amount)) return 'Not enough balance'
   set({ squad: { ...q, bank: +(q.bank + amount).toFixed(2) } })
 }
 export function withdrawSquad(amount: number) {
   const q = state.squad
   if (!q || !(amount > 0) || amount > q.bank) return
+  if (SERVER) return squadServer('withdraw', amount)
   set({ squad: { ...q, bank: +(q.bank - amount).toFixed(2) }, balance: +(state.balance + amount).toFixed(2) })
 }
 export const pickForSquad = (i?: number) => set({ squadPicking: i })
@@ -686,7 +697,7 @@ export function setSquadPick(i: number, leg: Leg | null) {
   set({ squad: { ...q, picks: q.picks.map((p, j) => (j === i ? leg && (({ moved, result, ...l }) => l)(leg) : p)) } })
 }
 /** Lock the weekly parlay: staked from the bank, and its payout goes back into the bank. */
-export function placeSquad(stake: number): string | undefined {
+export function placeSquad(stake: number): string | undefined | Promise<string | undefined> {
   const q = state.squad
   if (!q) return
   if (isCoolingOff()) return 'You are on a break. Betting is paused.'
@@ -699,13 +710,16 @@ export function placeSquad(stake: number): string | undefined {
   const straight = legs.reduce((m, l) => m * toDecimal(l.odds), 1)
   // Each leg remembers who added it (you're member 0). Only they play it; bots deal theirs right away.
   const tagged = q.picks.map((l, i) => ({ ...l!, result: 'pending' as Result, ...(i ? { by: q.members[i].name } : {}) }))
+  if (SERVER) return placeSquadServer(q, tagged, stake)
   const bet: Bet = { id: uid(), legs: tagged, stake, placedAt: Date.now(), status: 'pending', payout: 0, squad: true, ...(dec < straight - 1e-9 ? { sgpMult: dec / straight } : {}) }
   set({ bets: [bet, ...state.bets], squad: { ...q, bank: +(q.bank - stake).toFixed(2), betId: bet.id } })
   q.picks.forEach((l, i) => { if (q.members[i].bot && l?.casino) resolveLeg(bet.id, l.id, simRound(l.casino.game, l.casino.pick)) })
 }
 /** Leave the squad: whatever is in the bank comes back to you. */
-export function leaveSquad() {
+export async function leaveSquad() {
   const q = state.squad
+  if (SERVER && q?.bank) { const err = await squadServer('withdraw', q.bank); if (err) return alert(err) }
+  if (SERVER) return set({ squad: undefined, squadPicking: undefined })
   if (q) set({ squad: undefined, squadPicking: undefined, balance: +(state.balance + q.bank).toFixed(2) })
 }
 
@@ -717,30 +731,112 @@ const fromServer = (b: ServerBet): Bet => ({
 
 /** Place tickets on the server, which prices every leg itself. */
 async function serverBet(body: Record<string, unknown>, cost: number, clearSlip: boolean, extra: Partial<State> = {}): Promise<string | undefined> {
+  const r = await serverBetRaw(body, cost, clearSlip, extra)
+  return typeof r === 'string' ? r : undefined
+}
+async function serverBetRaw(body: Record<string, unknown>, cost: number, clearSlip: boolean, extra: Partial<State> = {}): Promise<string | { ids: string[]; squadBank: number }> {
   try {
-    const r = await house<{ ids: string[]; tickets: { legs: Leg[]; stake: number; opts: Partial<Bet> }[] }>({ action: 'bet', ...body })
+    const r = await house<{ ids: string[]; tickets: { legs: Leg[]; stake: number; opts: Partial<Bet> }[]; inv: Inventory; squadBank: number }>({ action: 'bet', ...body })
     const placed = r.tickets.map((t, i): Bet => ({ ...t.opts, id: r.ids[i], legs: t.legs, stake: t.stake, placedAt: Date.now(), status: 'pending', payout: 0, server: true }))
-    set({ balance: r.balance, bets: [...placed, ...state.bets], ...(clearSlip ? { slip: [] } : {}), ...spend(cost), ...extra })
+    set({ balance: r.balance, inv: r.inv, bets: [...placed, ...state.bets], ...(clearSlip ? { slip: [] } : {}), ...spend(cost), ...extra })
+    return { ids: r.ids, squadBank: r.squadBank }
   } catch (e) { return (e as Error).message }
 }
 
-/** The server's balance and tickets replace the local copies. Tickets that won since the last look earn XP here. */
+type Me = {
+  balance: number; squadBank: number; inv: Inventory; xp: number; prestige: number; prestigeStartedAt: string; claimedLevels: string[]
+  challengesClaimed: string[]; challengesDone: string[]; seasonsClaimed: string[]; code: string; referrals: number
+}
+/** The server's balance, tickets, XP, tokens and claims replace the local copies. */
 export async function syncServer(settleSports = false) {
   if (!SERVER) return
   if (settleSports && state.bets.some(b => b.server && b.status === 'pending' && b.legs.some(l => l.sport && l.result === 'pending'))) await house({ action: 'settle' }).catch(() => {})
-  const s = await pull()
-  if (!s) return
-  const before = new Map(state.bets.map(b => [b.id, b]))
-  let xp = 0
-  const bets = s.bets.map(fromServer).map(b => {
-    const old = before.get(b.id)
-    if (b.status !== 'won' || old?.status !== 'pending') return old?.xp ? { ...b, xp: old.xp } : b
-    const x = xpForTicket(b.legs.length, b.payout - b.stake, b.legs.some(l => l.sport) && b.legs.some(l => l.casino))
-    xp += x
-    return { ...b, xp: x }
-  })
+  const [s, me] = await Promise.all([pull(), house<Me>({ action: 'me' }).catch(() => undefined)])
+  if (!s || !me) return
+  const bets = s.bets.map(fromServer).map(b => (b.status === 'won' && !b.cashedOut
+    ? { ...b, xp: xpForTicket(b.legs.length, b.payout - b.stake, b.legs.some(l => l.sport) && b.legs.some(l => l.casino)) } : b))
   const ids = new Set(bets.map(b => b.id))
-  set(withXp({ balance: s.balance, bets: [...bets, ...state.bets.filter(b => !ids.has(b.id) && !b.server)] }, xp))
+  const patch: Partial<State> = {
+    balance: me.balance, inv: { ...NO_INV, ...me.inv }, bets: [...bets, ...state.bets.filter(b => !ids.has(b.id) && !b.server)],
+    prestige: me.prestige, prestigeStartedAt: Date.parse(me.prestigeStartedAt), claimedLevels: me.claimedLevels, challengesClaimed: me.challengesClaimed,
+    challengesDone: [...new Set([...state.challengesDone, ...me.challengesDone])], seasonsClaimed: me.seasonsClaimed, code: me.code, referrals: me.referrals,
+    ...(me.referrals >= 5 ? { unlocked: unlockAll([{ kind: 'frame', name: 'Recruiter', color: '#22d3ee' }]) } : {}), // 5 friends joined
+    ...(state.squad ? { squad: { ...state.squad, bank: Number(me.squadBank) } } : {}),
+  }
+  set(me.xp > state.xp ? withXp(patch, me.xp - state.xp) : { ...patch, xp: me.xp }) // a level-up from server XP still gets its celebration
+}
+
+/** Avatars and frames from rewards: cosmetics, so they unlock on this device. */
+const unlockAll = (rewards: Reward[], unlocked = state.unlocked) => {
+  const u = [...unlocked]
+  for (const r of rewards) {
+    const key = r.kind === 'avatar' ? r.emoji : r.kind === 'frame' ? `frame:${r.name}:${r.color}` : undefined
+    if (key && !u.includes(key)) u.push(key)
+  }
+  return u
+}
+const fail = (e: unknown) => { alert((e as Error).message) } // ponytail: plain alert, like adjustBalance's
+
+async function claimLevelsServer() {
+  try {
+    const r = await house<{ levels: number[]; cosmetics: Reward[]; inv: Inventory }>({ action: 'claimLevels' })
+    set({ balance: r.balance, inv: r.inv, unlocked: unlockAll(r.cosmetics), claimedLevels: [...state.claimedLevels, ...r.levels.map(levelKey)] })
+  } catch (e) { fail(e) }
+}
+async function claimChallengeServer(id: string) {
+  try {
+    const r = await house<{ skin?: string; xp: number; inv: Inventory }>({ action: 'claimChallenge', id })
+    const unlocked = r.skin && !state.unlocked.includes(`skin:${r.skin}`) ? [...state.unlocked, `skin:${r.skin}`] : state.unlocked
+    set(withXp({ challengesClaimed: [...state.challengesClaimed, id], unlocked, inv: r.inv }, r.xp))
+  } catch (e) { fail(e) }
+}
+async function prestigeServer(): Promise<string | undefined> {
+  try {
+    const r = await house<{ prestige: number; prestigeStartedAt: string; rewards: Reward[]; cosmetics: Reward[]; inv: Inventory }>({ action: 'prestige' })
+    const me = accounts.list.find(a => a.id === accounts.current)
+    if (me && !BASE_AVATARS.includes(me.avatar)) {
+      accounts = { ...accounts, list: accounts.list.map(a => (a.id === me.id ? { ...a, avatar: BASE_AVATARS[0] } : a)) }
+      write(ACCOUNTS_KEY, accounts)
+    }
+    set({
+      balance: r.balance, inv: r.inv, unlocked: unlockAll(r.cosmetics, []), prestige: r.prestige, xp: 0, prestigeStartedAt: Date.parse(r.prestigeStartedAt),
+      prestigeUp: { prestige: r.prestige, at: Date.now(), rewards: r.rewards }, challengesDone: [], challengesClaimed: [], tableSkin: 'classic', cardBack: 'red', frame: undefined,
+    })
+  } catch (e) { return (e as Error).message }
+}
+async function claimSeasonServer(week: string) {
+  try {
+    const r = await house<{ skin: string; cash: number }>({ action: 'claimSeason', week })
+    const unlocked = state.unlocked.includes(`skin:${r.skin}`) ? state.unlocked : [...state.unlocked, `skin:${r.skin}`]
+    set({ balance: r.balance, unlocked, seasonsClaimed: [...(state.seasonsClaimed ?? []), week], txns: [txn('bonus', r.cash), ...state.txns] })
+  } catch (e) { fail(e) }
+}
+async function redeemServer(code: string): Promise<string | undefined> {
+  try {
+    const r = await house({ action: 'redeem', code })
+    set({ balance: r.balance, inv: { ...state.inv, boost50: state.inv.boost50 + 1 }, txns: [{ id: uid(), type: 'referral', amount: REFERRAL.newCash, at: Date.now() }, ...state.txns] })
+  } catch (e) { return (e as Error).message }
+}
+async function cashOutServer(betId: string) {
+  try {
+    const r = await house<{ amount: number }>({ action: 'cashout', betId })
+    const b = state.bets.find(x => x.id === betId)!
+    const status: Result = r.amount > b.stake ? 'won' : r.amount < b.stake ? 'lost' : 'push'
+    set({ balance: r.balance, bets: state.bets.map(x => (x.id === betId ? { ...x, status, payout: r.amount, cashedOut: true } : x)) })
+  } catch (e) { fail(e) }
+}
+async function squadServer(op: 'fund' | 'withdraw', amount: number): Promise<string | undefined> {
+  try {
+    const r = await house<{ squadBank: number }>({ action: 'squad', op, amount })
+    set({ balance: r.balance, ...(state.squad ? { squad: { ...state.squad, bank: Number(r.squadBank) } } : {}) })
+  } catch (e) { return (e as Error).message }
+}
+/** The squad parlay, staked from the server's squad bank. Bots' casino legs are dealt right away. */
+async function placeSquadServer(q: Squad, legs: Leg[], stake: number): Promise<string | undefined> {
+  const r = await serverBetRaw({ legs: legs.map(({ moved, result, ...l }) => l), stake, squad: true }, 0, false)
+  if (typeof r === 'string') return r
+  set({ squad: { ...q, bank: Number(r.squadBank), betId: r.ids[0] } })
+  for (const [i, l] of q.picks.entries()) if (q.members[i].bot && l?.casino) await playLegServer(r.ids[0], l.id)
 }
 
 /** Play a casino leg's free round on the server. Returns the leg's result, or an error message. */

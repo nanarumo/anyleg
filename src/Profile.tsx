@@ -4,7 +4,7 @@ import { fmtOdds, money, toAmerican, toDecimal, type CasinoGame } from './logic.
 import {
   claimSeason, getAccounts, netBetween,
   BASE_AVATARS, BONUS_EVERY_MS, SESSION_START, createAccount, markNotesSeen,
-  REFERRAL, REFERRAL_MILESTONES, addFriend, codeOf, friendStats, redeemReferral, referralsOf, removeFriend, setDailyLimit, setFrame, spentToday, unclaimedChallenges, unclaimedLevels, switchAccount, deleteAccount, updateAccount, updateSettings, useAccounts, useStore,
+  REFERRAL, REFERRAL_MILESTONES, addFriend, codeOf, friendStats, redeemReferral, referralCount, removeFriend, setDailyLimit, setFrame, spentToday, unclaimedChallenges, unclaimedLevels, switchAccount, deleteAccount, updateAccount, updateSettings, useAccounts, useStore,
   type Account, type Bet, type CasinoRound, type Txn,
 } from './store.ts'
 import { GAME_NAMES } from './Casino.tsx'
@@ -433,7 +433,7 @@ function Refer({ me }: { me: Account }) {
   const [redeem, setRedeem] = useState('')
   const [friendCode, setFriendCode] = useState('')
   const [msg, setMsg] = useState<{ text: string; bad?: boolean }>()
-  const referred = referralsOf(me.id).length
+  const referred = referralCount(me.id)
   const canRedeem = !me.referredBy && Date.now() - me.createdAt < 7 * 86_400_000
   const friends = (me.friends ?? []).map(id => list.find(a => a.id === id)).filter((a): a is Account => !!a)
   // Leaderboard: you and your friends by net profit.
@@ -468,7 +468,7 @@ function Refer({ me }: { me: Account }) {
           <div className="panel-head"><b>Got a friend's code?</b><span className="muted small">Within 7 days of signing up</span></div>
           <div className="inline-form">
             <input value={redeem} onChange={e => setRedeem(e.target.value)} placeholder="e.g. NICK-4F2A" />
-            <button className="cta" onClick={() => result(redeemReferral(redeem), `Code applied: +$${REFERRAL.newCash} and a 50% Parlay Boost`)}>Redeem</button>
+            <button className="cta" onClick={async () => result(await redeemReferral(redeem), `Code applied: +$${REFERRAL.newCash} and a 50% Parlay Boost`)}>Redeem</button>
           </div>
         </div>
       )}

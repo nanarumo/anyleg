@@ -1,6 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import { PROP_STATS, fmtOdds, type PropStat } from './logic.ts'
-import { PROP_LEAGUES, PROP_ODDS, propLeg, rungLeg, useProps } from './props.ts'
+import { PROP_LEAGUES, PROP_ODDS, STALE_MS, fetchProps, propLeg, rungLeg, type Prop } from './props.ts'
 import { LEAGUES, type Game, type Price } from './odds.ts'
 import { toggleLeg, useStore, type Leg } from './store.ts'
 import { LeagueHero, SPORT_ICON, sportOf } from './LeagueArt.tsx'
@@ -164,3 +164,20 @@ export function legFromPrice(g: Game, price: Price): Leg {
     icon: team ? team.logo : g.away.logo, icon2: team ? undefined : g.home.logo,
   }
 }
+
+/** Props for a set of games, keyed by game id; refetches when they go stale. */
+export function useProps(games: Game[], on = true) {
+  const [byGame, setByGame] = useState<Map<string, Prop[]>>(new Map())
+  const ids = on ? games.filter(g => PROP_LEAGUES.includes(g.league) && g.state === 'pre').map(g => g.id).join(',') : ''
+  useEffect(() => {
+    if (!ids) return
+    let alive = true
+    const load = () => Promise.allSettled(games.filter(g => ids.split(',').includes(g.id)).map(async g => [g.id, await fetchProps(g)] as const))
+      .then(rs => alive && setByGame(new Map(rs.flatMap(r => (r.status === 'fulfilled' ? [r.value] : [])))))
+    load()
+    const t = setInterval(load, STALE_MS)
+    return () => { alive = false; clearInterval(t) }
+  }, [ids])
+  return byGame
+}
+

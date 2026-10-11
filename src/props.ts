@@ -2,14 +2,13 @@
 // the lines but not the prices, so main over/unders are priced at a standard -115 and ladder rungs ("75+") are
 // priced from the main line (live.ts ladderProb).
 // ponytail: NBA/NHL prop names are matched by pattern because DraftKings posts them on game day; NFL names are exact.
-import { useEffect, useState } from 'react'
 import { PROP_STATS, type PropStat } from './logic.ts'
 import type { Game } from './odds.ts'
 import type { Leg } from './store.ts'
 import { ladderOdds, ladderProb } from './live.ts'
 
 export const PROP_ODDS = -115
-const STALE_MS = 5 * 60_000
+export const STALE_MS = 5 * 60_000
 
 const TYPES: Record<string, PropStat> = {
   'Total Passing Yards (incl. overtime)': 'passYds',
@@ -114,22 +113,6 @@ export function fetchProps(g: Game): Promise<Prop[]> {
   cache.set(g.id, { at: Date.now(), props })
   props.catch(() => cache.delete(g.id))
   return props
-}
-
-/** Props for a set of games, keyed by game id; refetches when they go stale. */
-export function useProps(games: Game[], on = true) {
-  const [byGame, setByGame] = useState<Map<string, Prop[]>>(new Map())
-  const ids = on ? games.filter(g => PROP_LEAGUES.includes(g.league) && g.state === 'pre').map(g => g.id).join(',') : ''
-  useEffect(() => {
-    if (!ids) return
-    let alive = true
-    const load = () => Promise.allSettled(games.filter(g => ids.split(',').includes(g.id)).map(async g => [g.id, await fetchProps(g)] as const))
-      .then(rs => alive && setByGame(new Map(rs.flatMap(r => (r.status === 'fulfilled' ? [r.value] : [])))))
-    load()
-    const t = setInterval(load, STALE_MS)
-    return () => { alive = false; clearInterval(t) }
-  }, [ids])
-  return byGame
 }
 
 export const propLeg = (p: Prop, side: 'over' | 'under'): Leg => ({

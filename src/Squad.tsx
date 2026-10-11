@@ -77,7 +77,7 @@ function SquadHome({ games, onClose, onPickLeg }: { games: Game[]; onClose: () =
   const [msg, setMsg] = useState<string>()
   const [custom, setCustom] = useState('')
   const [fundMsg, setFundMsg] = useState<string>()
-  const addCustom = () => { const v = Math.round(Number(custom) * 100) / 100; const err = fundSquad(v); setFundMsg(err); if (!err) setCustom('') }
+  const addCustom = async () => { const v = Math.round(Number(custom) * 100) / 100; const err = await fundSquad(v); setFundMsg(err); if (!err) setCustom('') }
   const bet = q.betId ? bets.find(b => b.id === q.betId) : undefined
   // Bots fill their spot as soon as there are lines to pick from.
   useEffect(() => {
@@ -98,7 +98,7 @@ function SquadHome({ games, onClose, onPickLeg }: { games: Game[]; onClose: () =
         <div className="squad-members">{q.members.map(m => <span key={m.name} title={m.name}>{m.avatar}<small>{m.name.split(' ')[0]}</small></span>)}</div>
         <div className="squad-bank"><small>SQUAD BANK</small><b>{money(q.bank)}</b></div>
         <div className="quick">
-          {[25, 100, 250].map(v => <button key={v} disabled={v > balance} onClick={() => setFundMsg(fundSquad(v))}>+${v}</button>)}
+          {[25, 100, 250].map(v => <button key={v} disabled={v > balance} onClick={async () => setFundMsg(await fundSquad(v))}>+${v}</button>)}
           <button disabled={!q.bank} onClick={() => withdrawSquad(q.bank)}>Withdraw all</button>
         </div>
         <form className="squad-custom" onSubmit={e => { e.preventDefault(); addCustom() }}>
@@ -128,7 +128,7 @@ function SquadHome({ games, onClose, onPickLeg }: { games: Game[]; onClose: () =
           {bet.status !== 'pending' && <button className="cta" onClick={() => squadNewWeek(true)}>🔁 Build the next squad parlay</button>}
         </> : <>
           <div className="quick">{[10, 25, 50, 100].map(v => <button key={v} className={stake === v ? 'on' : ''} disabled={v > q.bank} onClick={() => setStake(v)}>${v}</button>)}</div>
-          <button className="cta" disabled={!ready || stake > q.bank} onClick={() => setMsg(placeSquad(stake) ?? 'Squad parlay locked! It’s in My Bets.')}>
+          <button className="cta" disabled={!ready || stake > q.bank} onClick={async () => setMsg((await placeSquad(stake)) ?? 'Squad parlay locked! It’s in My Bets.')}>
             {ready ? `Lock it · ${money(stake)} from the bank` : `Waiting on ${q.members.length - legs.length} leg${q.members.length - legs.length > 1 ? 's' : ''}`}
           </button>
           {stake > q.bank && <p className="muted small">Add money to the squad bank to stake this.</p>}

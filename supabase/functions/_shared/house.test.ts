@@ -73,3 +73,22 @@ for (let i = 0; i < 300; i++) {
 }
 assert.equal(typeof startHand({ game: 'blackjack', bets: { main: 0 } as any }), 'string')
 console.log('house ok')
+
+// ---- player progress ----
+const { xpOf, historyOf, claimLevels, claimChallenge, enterPrestige, seasonPlace } = await import('./player.ts')
+const inv = { spins: 0, boost25: 0, boost50: 0, boost100: 0, insurance: 0 }
+const player = { inv, prestige: 0, prestige_started_at: new Date(0).toISOString(), claimed_levels: [] as string[], challenges_claimed: [] as string[], seasons_claimed: [] as string[], xp_bonus: 0 }
+const at = new Date().toISOString()
+const hist = historyOf(
+  [{ legs: [{ casino: {}, result: 'won' }, { sport: {}, result: 'won' }], stake: 10, status: 'won', payout: 40, opts: {}, placed_at: at }],
+  [{ game: 'roulette', wager: 10, returned: 20, at, note: '1 red' }, { game: 'slots', wager: 0, returned: 5, at }, { game: 'roulette', wager: 0, returned: 0, at, bet_id: 'x' }],
+)
+assert.equal(hist.rounds.length, 1) // free spins and leg rounds don't count
+assert.equal(xpOf(hist), (100 + 75 + 3 + 100) + 25 + (15 + 1)) // ticket + casino leg hit + roulette win
+const lv = claimLevels(player, 5000)
+assert.ok(lv.levels.length > 3 && lv.cash > 0)
+assert.equal(claimLevels(lv.player, 5000).levels.length, 0) // can't claim twice
+assert.equal(claimChallenge(player, hist, 'parlay5'), 'Not finished yet')
+assert.equal(enterPrestige(player, 100), 'Reach level 50 first')
+assert.equal(typeof seasonPlace('2026-10-05', 1e9, Date.now()), 'number')
+console.log('player ok')

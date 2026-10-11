@@ -140,6 +140,9 @@ export const CHALLENGES: Challenge[] = [
     progress: h => wonTickets(h).filter(b => b.payout - b.stake >= 25000).length },
 ]
 
+/** Every challenge also pays an odds boost token: 50% for the big ones (600+ XP), 25% otherwise. */
+export const challengeBoost = (c: { xp: number }): 'boost25' | 'boost50' => (c.xp >= 600 ? 'boost50' : 'boost25')
+
 /** Challenges whose goal is met but are not yet marked done. */
 export const newlyCompleted = (h: History, done: string[], prestige = 0) =>
   CHALLENGES.filter(c => (c.minPrestige ?? 0) <= prestige && !done.includes(c.id) && c.progress(h) >= c.goal)

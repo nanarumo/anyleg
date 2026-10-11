@@ -33,10 +33,10 @@ export default function Slots({ leg }: { leg?: LegPlay }) {
     let next = [0, 1, 2].map(() => [spinReel(), spinReel(), spinReel()])
     const server = SERVER && !leg
     if (server) { // the server takes the wager and stops the reels; this just animates them
-      if (free) return alert('Free spins are coming back soon') // ponytail: free spins need server-side inventory
       setSpinning(true)
-      const r = await serverRound<{ slots: { windows: string[][] } }>('slots', { wager: bet })
+      const r = await serverRound<{ slots: { windows: string[][] } }>('slots', free ? { free: true } : { wager: bet })
       if (typeof r === 'string') { setSpinning(false); return alert(r) }
+      if (free) useFreeSpin() // the server spent the token; mirror it here
       next = r.outcome.slots.windows
     } else if (!leg && (free ? !useFreeSpin() : !adjustBalance(-bet))) return
     setStrips(windows.map((w, i) => [...w, ...Array.from({ length: FILLER + i * 6 }, () => SLOT_SYMBOLS[Math.floor(Math.random() * SLOT_SYMBOLS.length)]), ...next[i]]))

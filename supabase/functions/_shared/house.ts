@@ -2,14 +2,17 @@
 // game math (src/logic.ts) so odds and payouts match the app exactly. Pure: no Supabase, no Deno, so
 // `node supabase/functions/_shared/house.test.ts` can check it.
 import {
-  CASINO_PICKS, CHAOS_BOOST, bjOutcome, buster, canSplit, handValue, isBlackjack, luckyLadies, perfectPairs, playDealer, twentyOnePlus3, FLEX_MIN, PLINKO_RISK, applyTokens, bacReturn, boxStats, casinoPick, crashPoint, gradeCasino, gradeProp,
+  CASINO_PICKS, CHAOS_BOOST, bjOutcome, buster, canSplit, handValue, isBlackjack, luckyLadies, perfectPairs, playDealer, twentyOnePlus3, FLEX_MIN, PLINKO_RISK, applyTokens, bacReturn, bacValue, boxStats, rouletteColor, casinoPick, crashPoint, gradeCasino, gradeProp,
   gradeSport, minesMult, MINES_TILES, newShoe, placeMines, pokerHand, parlayDecimal, parseOdds, playBaccarat, plinkoPath, roulettePays, rouletteWins, roundText, settle, settleFlex,
   simRound, slotPays, spinReel, toDecimal, type Card, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side,
 } from '../../../src/logic.ts'
+import { cashOutValue, legProb, priceOf, type LiveInput } from '../../../src/live.ts'
+import { PROP_ODDS, fetchProps } from '../../../src/props.ts'
 
 /** Uniform [0, 1) from the OS's crypto RNG. Players can't see or steer it. */
 export const rng = () => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32
 
+export const FREE_SPIN_VALUE = 5 // same as the app's store.ts
 const cents = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0 && n <= 1e7 && Math.round(n * 100) === n * 100
 const sum = (xs: { amount: number }[]) => +xs.reduce((t, x) => t + x.amount, 0).toFixed(2)
 
@@ -17,10 +20,11 @@ const sum = (xs: { amount: number }[]) => +xs.reduce((t, x) => t + x.amount, 0).
 export type RoundReq =
   | { game: 'roulette'; bets: { pick: string; amount: number }[] }
   | { game: 'baccarat'; bets: { spot: string; amount: number }[] }
-  | { game: 'slots'; wager: number }
+  | { game: 'slots'; wager: number; free?: boolean } // free: spends a Free Spin token, played at FREE_SPIN_VALUE
   | { game: 'plinko'; wager: number; risk: keyof typeof PLINKO_RISK }
   | { game: 'crash'; wager: number; cashAt: number } // ponytail: auto cash-out target; tap-to-cash-out needs server time (step 4)
-export type Dealt = { wager: number; returned: number; outcome: Record<string, unknown> }
+/** note: the same one-liner the app logs for the round (challenges read some, like "BLACKJACK!"). */
+export type Dealt = { wager: number; returned: number; outcome: Record<string, unknown>; note: string }
 
 const ROULETTE_SPOT = /^(red|black|odd|even|low|high|[dc][123]|n([0-9]|[12]\d|3[0-6]))$/
 const BAC_SPOTS = ['player', 'banker', 'tie', 'ppair', 'bpair']
@@ -33,30 +37,31 @@ export function dealRound(req: RoundReq, rand = rng): Dealt | string {
       if (req.bets.some(b => !ROULETTE_SPOT.test(b?.pick) || !cents(b.amount))) return 'Bad roulette bet'
       const n = Math.floor(rand() * 37)
       const returned = +req.bets.reduce((t, b) => t + (rouletteWins(b.pick, n) ? b.amount * roulettePays(b.pick) : 0), 0).toFixed(2)
-      return { wager: sum(req.bets), returned, outcome: { roulette: n } }
+      return { wager: sum(req.bets), returned, outcome: { roulette: n }, note: `${n} ${rouletteColor(n)}` }
     }
     case 'baccarat': {
       if (!Array.isArray(req.bets) || !req.bets.length || req.bets.some(b => !BAC_SPOTS.includes(b?.spot) || !cents(b.amount))) return 'Bad baccarat bet'
       const coup = playBaccarat(newShoe(8, rand))
       const returned = +req.bets.reduce((t, b) => t + bacReturn(b.spot, b.amount, coup), 0).toFixed(2)
-      return { wager: sum(req.bets), returned, outcome: { baccarat: coup } }
+      return { wager: sum(req.bets), returned, outcome: { baccarat: coup }, note: `${coup.winner === 'tie' ? 'Tie' : coup.winner === 'player' ? 'Player' : 'Banker'} ${bacValue(coup.player)}–${bacValue(coup.banker)}` }
     }
     case 'slots': {
-      if (!cents(req.wager)) return 'Bad wager'
+      if (!req.free && !cents(req.wager)) return 'Bad wager'
+      const stake = req.free ? FREE_SPIN_VALUE : req.wager
       const windows = [0, 1, 2].map(() => [spinReel(rand), spinReel(rand), spinReel(rand)]) // 3 visible symbols per reel
       const { mult, name } = slotPays(windows.map(w => w[1])) // middle payline
-      return { wager: req.wager, returned: +(req.wager * mult).toFixed(2), outcome: { slots: { windows, mult, name } } }
+      return { wager: req.free ? 0 : stake, returned: +(stake * mult).toFixed(2), outcome: { slots: { windows, mult, name } }, note: name }
     }
     case 'plinko': {
       if (!cents(req.wager) || !(req.risk in PLINKO_RISK)) return 'Bad wager'
       const path = plinkoPath(rand)
       const mult = PLINKO_RISK[req.risk][path.reduce<number>((a, b) => a + b, 0)]
-      return { wager: req.wager, returned: +(req.wager * mult).toFixed(2), outcome: { plinko: { path, mult, risk: req.risk } } }
+      return { wager: req.wager, returned: +(req.wager * mult).toFixed(2), outcome: { plinko: { path, mult, risk: req.risk } }, note: `${mult}x (${req.risk})` }
     }
     case 'crash': {
       if (!cents(req.wager) || !(req.cashAt >= 1.01 && req.cashAt <= 1000)) return 'Bad wager'
       const point = crashPoint(rand)
-      return { wager: req.wager, returned: point >= req.cashAt ? +(req.wager * req.cashAt).toFixed(2) : 0, outcome: { crash: { point, cashAt: req.cashAt } } }
+      return { wager: req.wager, returned: point >= req.cashAt ? +(req.wager * req.cashAt).toFixed(2) : 0, outcome: { crash: { point, cashAt: req.cashAt } }, note: point >= req.cashAt ? `Cashed out ${req.cashAt.toFixed(2)}x` : `Crashed at ${point.toFixed(2)}x` }
     }
   }
   return 'Unknown game'
@@ -123,6 +128,18 @@ export function closeHand(h: Hand, wager: number): { hand: Hand; returned: numbe
 export const handOver = (h: Hand) => h.game === 'blackjack' && h.phase === 'done'
 /** What the player stakes to start a hand. */
 export const handWager = (h: Hand, req: { wager?: number }) => (h.game === 'blackjack' ? bjWager(h.bets) : Number(req.wager))
+
+/** The one-liner the app logs for a finished hand. */
+export function handNote(h: Hand): string {
+  if (h.game === 'poker') return pokerHand(h.hand).name
+  if (h.game === 'mines') {
+    const safe = minesSafe(h)
+    return h.opened.some(t => h.mines.includes(t)) ? `Mine after ${safe} gems` : `${safe} gems · ${minesMult(h.count, safe)}x`
+  }
+  if (h.hands.length > 1) return 'Split hands'
+  const { cards, result } = h.hands[0]
+  return result === 'push' ? 'PUSH' : result === 'lost' ? (handValue(cards) > 21 ? 'BUST' : 'DEALER WINS') : isBlackjack(cards) ? 'BLACKJACK!' : 'WIN'
+}
 
 /** What the player may see. Mine spots only once the board is over; never the deck. */
 export function handView(h: Hand, done: boolean) {
@@ -216,12 +233,14 @@ export type Leg = {
   casino?: { game: CasinoGame; pick: string }
   [k: string]: unknown
 }
-export type Ticket = { legs: Leg[]; stake: number; opts: { flex?: boolean; sgpMult?: number; boost?: number; chaos?: boolean } }
-export type BetReq = { legs: Leg[]; stake: number; mode?: 'parlay' | 'singles'; flex?: boolean; chaos?: boolean; daily?: boolean }
+export type Ticket = { legs: Leg[]; stake: number; opts: { flex?: boolean; sgpMult?: number; boost?: number; chaos?: boolean; insured?: boolean; squad?: boolean; daily?: boolean } }
+/** boost / insure spend the player's reward tokens (the caller takes them); squad stakes from the squad bank. */
+export type BetReq = { legs: Leg[]; stake: number; mode?: 'parlay' | 'singles'; flex?: boolean; chaos?: boolean; daily?: boolean; boost?: 'boost25' | 'boost50' | 'boost100'; insure?: boolean; squad?: boolean }
+const BOOST_PCT = { boost25: 0.25, boost50: 0.5, boost100: 1 }
 const DAILY_BOOST = 0.3 // same as the app's store.ts
 // ponytail: the server doesn't check these are the day's seeded Daily Boost picks, only one boosted 3-leg parlay per day
-/** Pregame price for a market id like "nfl:401872974:spread:home", from the live feed. */
-export type Board = (leg: Leg) => Promise<{ odds: number; line?: number } | undefined>
+/** The house's price for a sports leg right now, and (live games) the model's fair chance it wins. Undefined = off the board. */
+export type Board = (leg: Leg) => Promise<{ odds: number; line?: number; prob?: number } | undefined>
 
 const MAX_LEGS = 15
 const sameLine = (a?: number, b?: number) => a === b || (a !== undefined && b !== undefined && Math.abs(a - b) < 1e-9)
@@ -237,12 +256,20 @@ export async function priceTickets(req: BetReq, board: Board, rand = rng): Promi
     if (l.casino) {
       const p = casinoPick(l.casino.game, l.casino.pick)
       if (!p) return 'That casino leg is not on offer'
-      legs.push({ id: `casino:${l.casino.game}:${l.casino.pick}`, label: p.label, sub: String(l.sub ?? ''), odds: p.odds, casino: { game: l.casino.game, pick: l.casino.pick }, result: 'pending' })
+      legs.push({ id: `casino:${l.casino.game}:${l.casino.pick}`, label: p.label, sub: String(l.sub ?? ''), odds: p.odds, casino: { game: l.casino.game, pick: l.casino.pick }, result: 'pending', ...(req.squad && typeof l.by === 'string' ? { by: l.by.slice(0, 40) } : {}) })
     } else if (l.sport) {
       const price = await board(l)
       if (!price) return `${l.label} is off the board`
       if (!sameLine(price.line, l.sport.line)) return `${l.label}: the line moved`
-      legs.push({ ...l, odds: price.odds, result: 'pending' })
+      const s = l.sport, p = s.prop as { athleteId?: unknown; stat?: unknown } | undefined
+      const str = (x: unknown, n: number) => (typeof x === 'string' ? x.slice(0, n) : '')
+      legs.push({ // only the fields the app needs: nothing else from the request rides along
+        id: str(l.id, 120), label: str(l.label, 120), sub: str(l.sub, 120), odds: price.odds, result: 'pending',
+        ...(typeof l.icon === 'string' && l.icon.startsWith('data:image/svg+xml,') ? { icon: l.icon.slice(0, 2000) } : {}),
+        ...(typeof l.icon2 === 'string' && l.icon2.startsWith('data:image/svg+xml,') ? { icon2: l.icon2.slice(0, 2000) } : {}),
+        sport: { path: s.path, eventId: s.eventId, market: s.market, side: s.side, ...(s.line === undefined ? {} : { line: s.line }), ...(p ? { prop: { athleteId: String(p.athleteId), stat: String(p.stat) } } : {}) },
+        ...(req.squad && typeof l.by === 'string' ? { by: l.by.slice(0, 40) } : {}),
+      })
     } else return 'Unknown leg'
   }
   const mode = req.chaos ? 'parlay' : req.mode ?? 'parlay'
@@ -258,12 +285,16 @@ export async function priceTickets(req: BetReq, board: Board, rand = rng): Promi
   if (req.flex && (mode !== 'parlay' || legs.length < FLEX_MIN || parlayDecimal(legs).sgpGames)) return `Flex needs ${FLEX_MIN}+ legs from different games`
   if (req.daily && (mode !== 'parlay' || legs.length !== 3 || req.chaos || req.flex)) return 'The Daily Boost is one 3-leg parlay'
   const groups = mode === 'parlay' ? [legs] : legs.map(l => [l])
+  if (req.boost && (!(req.boost in BOOST_PCT) || groups.length !== 1 || req.flex || req.daily || req.squad)) return 'A boost goes on one ticket'
+  if (req.insure && (mode !== 'parlay' || legs.length < 4 || req.flex || req.squad)) return 'Insurance covers parlays of 4+ legs'
+  if (req.squad && mode !== 'parlay') return 'The squad bets one parlay'
+  const boost = (req.boost ? BOOST_PCT[req.boost] : 0) + (req.chaos ? CHAOS_BOOST : 0) + (req.daily ? DAILY_BOOST : 0)
   return groups.map(g => {
     const { dec } = parlayDecimal(g)
     const straight = g.reduce((m, l) => m * toDecimal(l.odds), 1)
     return {
       legs: g, stake: req.stake,
-      opts: { ...(dec < straight - 1e-9 ? { sgpMult: dec / straight } : {}), ...(req.flex ? { flex: true } : {}), ...(req.chaos ? { chaos: true, boost: CHAOS_BOOST } : {}), ...(req.daily ? { daily: true, boost: DAILY_BOOST } : {}) },
+      opts: { ...(dec < straight - 1e-9 ? { sgpMult: dec / straight } : {}), ...(req.flex ? { flex: true } : {}), ...(req.chaos ? { chaos: true } : {}), ...(req.daily ? { daily: true } : {}), ...(boost ? { boost } : {}), ...(req.insure ? { insured: true } : {}), ...(req.squad ? { squad: true } : {}) },
     }
   })
 }
@@ -307,22 +338,67 @@ export async function gradeSports(legs: Leg[], fetchJson: (url: string) => Promi
   return changed ? out : undefined
 }
 
-// ---- the live feed, for pricing pregame sports legs ----
+// ---- the live feed: pregame lines, player props and live in-game prices, from the same ESPN feeds the app shows ----
 const num = (s?: string) => (s == null ? undefined : Number(String(s).replace(/^[ou]/, '')))
+const PATH = /^[a-z-]+\/[a-z0-9.-]+$/
 
-/** Pregame prices from the same ESPN scoreboard feed the app shows. Props and live legs are refused until step 3 prices them here. */
 export function espnBoard(fetchJson: (url: string) => Promise<any>): Board {
   const feeds = new Map<string, Promise<any>>()
+  const get = (url: string) => { if (!feeds.has(url)) feeds.set(url, fetchJson(url).catch(() => undefined)); return feeds.get(url)! }
   return async leg => {
     const s = leg.sport!
-    if (s.prop || leg.id.includes(':live:') || !/^[a-z-]+\/[a-z0-9.-]+$/.test(s.path)) return undefined
-    if (!feeds.has(s.path)) feeds.set(s.path, fetchJson(`https://site.api.espn.com/apis/site/v2/sports/${s.path}/scoreboard`).catch(() => undefined))
-    const e = (await feeds.get(s.path))?.events?.find((x: any) => x.id === s.eventId)
-    if (e?.status?.type?.state !== 'pre') return undefined
-    const o = e.competitions?.[0]?.odds?.[0]
+    const league = leg.id.split(':')[0]
+    if (!PATH.test(s.path) || !/^\d+$/.test(s.eventId)) return undefined
+    const e = (await get(`https://site.api.espn.com/apis/site/v2/sports/${s.path}/scoreboard`))?.events?.find((x: any) => x.id === s.eventId)
+    const state = e?.status?.type?.state
+    const comp = e?.competitions?.[0]
+    if (leg.id.includes(':live:')) {
+      // Live: the model's price for the leg's line, from the score, the clock and the pregame line.
+      if (state !== 'in' || s.prop || leg.id !== `${league}:${s.eventId}:live:${s.market}:${s.side}${s.line === undefined ? '' : ':' + s.line}`) return undefined
+      const sum = await get(`https://site.api.espn.com/apis/site/v2/sports/${s.path}/summary?event=${s.eventId}`)
+      const pc = sum?.pickcenter?.[0]
+      const score = (ha: string) => Number(comp.competitors.find((c: any) => c.homeAway === ha)?.score) || 0
+      const g: LiveInput = { league, home: score('home'), away: score('away'), period: e.status.period ?? 1, clock: e.status.displayClock ?? '',
+        pre: { margin: pc?.spread === undefined ? undefined : -Number(pc.spread), total: pc?.overUnder === undefined ? undefined : Number(pc.overUnder) } }
+      const prob = legProb(g, s.market, s.side, s.line)
+      return { odds: priceOf(prob), line: s.line, prob }
+    }
+    if (state !== 'pre') return undefined
+    if (s.prop) {
+      if (!comp?.competitors) return undefined
+      // Props: the main over/under at the standard price, or a ladder rung priced from the main line.
+      const p = s.prop as { athleteId: string; stat: string }
+      const teams = (ha: string) => { const t = comp.competitors.find((c: any) => c.homeAway === ha); return { id: t?.team?.id, name: '', abbr: t?.team?.abbreviation ?? '' } }
+      const game = { id: s.eventId, league, path: s.path, state: 'pre', home: teams('home'), away: teams('away') } as unknown as Parameters<typeof fetchProps>[0]
+      const prop = (await fetchProps(game).catch(() => [])).find(x => x.athleteId === p.athleteId && x.stat === p.stat)
+      if (!prop) return undefined
+      if (leg.id === `${prop.key}:${s.side}` && s.line === prop.line && (s.side === 'over' || s.side === 'under')) return { odds: PROP_ODDS, line: prop.line }
+      const rung = prop.ladder.find(r => leg.id === `${prop.key}:alt:${r.at}`)
+      return rung && s.side === 'over' ? { odds: rung.odds, line: rung.at - 0.5 } : undefined
+    }
+    const o = comp?.odds?.[0]
     const close = s.market === 'ml' ? o?.moneyline?.[s.side]?.close : s.market === 'spread' ? o?.pointSpread?.[s.side]?.close : s.market === 'total' ? o?.total?.[s.side]?.close : undefined
     const odds = parseOdds(close?.odds)
-    if (odds === undefined || leg.id !== `${leg.id.split(':')[0]}:${s.eventId}:${s.market}:${s.side}`) return undefined
+    if (odds === undefined || leg.id !== `${league}:${s.eventId}:${s.market}:${s.side}`) return undefined
     return { odds, line: s.market === 'ml' ? undefined : num(close?.line) }
   }
+}
+
+/** What an open ticket sells for now (the app's cash-out rule), or a reason it can't. */
+export async function cashOutQuote(legs: Leg[], stake: number, opts: Ticket['opts'], board: Board): Promise<number | string> {
+  if (opts.flex) return 'Flex tickets ride to the end'
+  const probs = await Promise.all(legs.map(async l => {
+    if (l.result !== 'pending' || !l.sport) return undefined
+    const live = await board({ ...l, id: l.id }) // a pregame leg's current price, or a live game's model chance
+    if (l.id.includes(':live:') || !live) {
+      if (live?.prob !== undefined) return live.prob
+      // A pregame leg whose game has started: price it live from the model.
+      const s = l.sport, league = l.id.split(':')[0]
+      const asLive = await board({ ...l, id: `${league}:${s.eventId}:live:${s.market}:${s.side}${s.line === undefined ? '' : ':' + s.line}` })
+      return s.prop ? undefined : asLive?.prob
+    }
+    return 1 / toDecimal(live.odds)
+  }))
+  const v = cashOutValue(stake * (opts.sgpMult ?? 1), legs, probs)
+  return v ?? 'Nothing to cash out'
 }
