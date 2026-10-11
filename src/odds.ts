@@ -1,7 +1,7 @@
 // Live lines from ESPN's public scoreboard API, which carries DraftKings odds. No key needed, CORS open.
 import { useEffect, useState } from 'react'
 import { boxStats, gradeProp, gradeSport, parseOdds, type Market, type Side } from './logic.ts'
-import { getState, gradeLegs, refreshSlipOdds } from './store.ts'
+import { getState, gradeLegs, refreshSlipOdds, syncServer } from './store.ts'
 import { livePrices, type LiveInput } from './live.ts'
 
 export const LEAGUES = [
@@ -151,6 +151,7 @@ export function useLiveGames() {
         setError(g.length ? undefined : 'No games returned')
         refreshSlipOdds(current, new Set(g.map(x => x.id)), new Set(g.filter(x => x.state !== 'pre').map(x => x.id)))
         settleSports(g)
+        syncServer(true)
       } catch (e) {
         if (alive) setError(String(e))
       }

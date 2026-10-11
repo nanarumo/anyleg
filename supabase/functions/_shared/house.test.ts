@@ -1,6 +1,6 @@
 // node supabase/functions/_shared/house.test.ts
 import assert from 'node:assert/strict'
-import { dealRound, espnBoard, grade, playLeg, priceTickets, type Leg } from './house.ts'
+import { dealRound, espnBoard, grade, gradeSports, playLeg, priceTickets, type Leg } from './house.ts'
 
 const fixed = (x: number) => () => x
 
@@ -36,4 +36,9 @@ assert.equal(playLeg(p.legs, red.id), 'Leg already played')
 assert.equal(grade(p.legs, 10, {}).status, 'pending') // ML still open
 const done = grade(p.legs.map((l: Leg) => ({ ...l, result: 'won' })), 10, {})
 assert.equal(done.payout, +(10 * (1 + 100 / 150) * 2).toFixed(2))
+// Sports legs grade from the final score, and only once the game is final.
+const summary = (completed: boolean) => async () => ({ header: { competitions: [{ status: { type: { completed } }, competitors: [{ homeAway: 'home', score: '24' }, { homeAway: 'away', score: '17' }] }] } })
+assert.equal(await gradeSports(legs, summary(false)), undefined)
+const graded = await gradeSports(legs, summary(true))
+assert.equal(graded![0].result, 'won'); assert.equal(graded![1].result, 'pending') // casino leg untouched
 console.log('house ok')

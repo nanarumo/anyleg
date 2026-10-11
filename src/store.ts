@@ -2,6 +2,7 @@ import { useSyncExternalStore } from 'react'
 import { CHAOS_BOOST, simRound, applyTokens, gradeCasino, roundText, parlayDecimal, settleFlex, FLEX_MIN, toDecimal, uid, setOddsFormat, settle, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side } from './logic.ts'
 import { CHALLENGES, newlyCompleted, type SkinId } from './challenges.ts'
 import { PRIZES, weekId } from './season.ts'
+import { SERVER, house, pull, type ServerBet } from './server.ts'
 import { MAX_LEVEL, MAX_PRESTIGE, XP_PER_LEG_HIT, levelOf, prestigeRewards, rewardsAt, xpForCasinoWin, xpForTicket, type Reward } from './progression.ts'
 
 export type Leg = {
@@ -31,6 +32,7 @@ export type Bet = {
   xp?: number // XP this ticket earned
   flex?: boolean // flex parlay: one leg can miss (logic.ts settleFlex)
   squad?: boolean // the squad's weekly parlay: staked from and paid into the squad bank
+  server?: boolean // lives on the server: priced, graded and paid there, never here
 }
 
 /** A squad: a shared bank and one weekly parlay where every member adds one leg. ponytail: lives on this device; real multi-phone squads need the backend. */
@@ -515,13 +517,14 @@ export function refreshSlipOdds(current: Map<string, number>, boardIds: Set<stri
 }
 
 /** Straight bet on one sports leg without touching the slip (Swipe Bet's straight mode). */
-export function placeSingle(leg: Leg, stake: number): string | undefined {
+export function placeSingle(leg: Leg, stake: number): string | undefined | Promise<string | undefined> {
   if (isCoolingOff()) return 'You are on a break. Betting is paused.'
   if (leg.casino) return 'Casino legs only count inside a parlay.'
   if (!(stake > 0)) return 'Set a wager in Swipe options'
   if (stake > state.balance) return 'Not enough balance'
   const limit = overLimit(stake); if (limit) return limit
   const { moved, ...l } = leg
+  if (SERVER) return serverBet({ legs: [l], stake, mode: 'singles' }, stake, false)
   const bet: Bet = { id: uid(), legs: [{ ...l, result: 'pending' }], stake, placedAt: Date.now(), status: 'pending', payout: 0 }
   set({ balance: +(state.balance - stake).toFixed(2), bets: [bet, ...state.bets], ...spend(stake) })
 }
@@ -536,20 +539,22 @@ export function noteTaste(keys: string[], delta: number) {
 /** The Daily Boost: a set parlay with a profit boost, once per day. */
 export const DAILY_BOOST = 0.3
 export const today = () => new Date().toLocaleDateString('en-CA')
-export function placeDailyBoost(legs: Leg[], stake: number): string | undefined {
+export function placeDailyBoost(legs: Leg[], stake: number): string | undefined | Promise<string | undefined> {
   if (isCoolingOff()) return 'You are on a break. Betting is paused.'
   if (state.boostDay === today()) return 'Already bet today. A new boost drops tomorrow.'
   if (!(stake > 0)) return 'Pick a wager'
   if (stake > state.balance) return 'Not enough balance'
   const limit = overLimit(stake); if (limit) return limit
+  if (SERVER) return serverBet({ legs: legs.map(({ moved, ...l }) => l), stake, daily: true }, stake, false, { boostDay: today() })
   const bet: Bet = { id: uid(), legs: legs.map(({ moved, ...l }) => ({ ...l, result: 'pending' })), stake, placedAt: Date.now(), status: 'pending', payout: 0, boost: DAILY_BOOST, daily: true }
   set({ balance: +(state.balance - stake).toFixed(2), bets: [bet, ...state.bets], boostDay: today(), ...spend(stake) })
 }
 
 /** Take back a bet that hasn't started settling: refund the stake. */
-export function cancelBet(id: string): boolean {
+export function cancelBet(id: string): boolean | Promise<boolean> {
   const b = state.bets.find(x => x.id === id)
   if (!b || b.status !== 'pending' || b.legs.some(l => l.result !== 'pending')) return false
+  if (b.server) return house({ action: 'cancel', betId: id }).then(r => { set({ bets: state.bets.filter(x => x.id !== id), balance: r.balance }); return true }, () => false)
   set({
     bets: state.bets.filter(x => x.id !== id),
     balance: +(state.balance + b.stake).toFixed(2),
@@ -558,7 +563,7 @@ export function cancelBet(id: string): boolean {
 }
 
 /** Parlay: one ticket with every slip leg. Singles: one ticket per leg at `stake` each. Tokens apply to parlays only. */
-export function placeBet(stake: number, mode: 'parlay' | 'singles' = 'parlay', opts: { boost?: BoostKey; insure?: boolean; flex?: boolean; chaos?: Leg } = {}): string | undefined {
+export function placeBet(stake: number, mode: 'parlay' | 'singles' = 'parlay', opts: { boost?: BoostKey; insure?: boolean; flex?: boolean; chaos?: Leg } = {}): string | undefined | Promise<string | undefined> {
   if (isCoolingOff()) return 'You are on a break. Betting is paused.'
   if (!state.slip.length) return 'Add a pick first'
   if (opts.chaos && (opts.flex || mode === 'singles' && state.slip.length > 1)) return 'The chaos leg rides on one parlay ticket'
@@ -578,6 +583,10 @@ export function placeBet(stake: number, mode: 'parlay' | 'singles' = 'parlay', o
   if (flex && (opts.boost || opts.insure)) return "Boosts and insurance don't stack with Flex"
   const boost = groups.length === 1 && opts.boost && state.inv[opts.boost] > 0 ? opts.boost : undefined // parlays and single straight bets
   const insure = parlay && opts.insure && slip.length >= 4 && state.inv.insurance > 0
+  if (SERVER) { // the server rolls the chaos leg itself
+    if (boost || insure) return 'Boost and insurance tokens are coming back soon'
+    return serverBet({ legs: state.slip.map(({ moved, ...l }) => l), stake, mode, flex, chaos: !!opts.chaos }, cost, true)
+  }
   const tickets: Bet[] = groups.map(legs => {
     const { dec } = parlayDecimal(legs)
     const straight = legs.reduce((m, l) => m * toDecimal(l.odds), 1)
@@ -599,7 +608,7 @@ export function placeBet(stake: number, mode: 'parlay' | 'singles' = 'parlay', o
 /** Sell an open ticket for `amount` (computed from live chances by the caller). */
 export function cashOut(betId: string, amount: number) {
   const b = state.bets.find(x => x.id === betId)
-  if (!b || b.status !== 'pending' || !(amount > 0)) return
+  if (!b || b.status !== 'pending' || !(amount > 0) || b.server) return // ponytail: server tickets can't cash out until the server prices it
   const status: Result = amount > b.stake ? 'won' : amount < b.stake ? 'lost' : 'push'
   set({ balance: +(state.balance + amount).toFixed(2), bets: state.bets.map(x => (x.id === betId ? { ...x, status, payout: amount, cashedOut: true } : x)) })
 }
@@ -611,7 +620,7 @@ export function gradeLegs(grade: (leg: Leg, bet: Bet) => Result | undefined) {
   let touched = false
   let xp = 0
   const bets = state.bets.map(b => {
-    if (b.status !== 'pending') return b
+    if (b.status !== 'pending' || b.server) return b
     const legs = b.legs.map(l => {
       if (l.result !== 'pending') return l
       const r = grade(l, b)
@@ -700,4 +709,59 @@ export function placeSquad(stake: number): string | undefined {
 export function leaveSquad() {
   const q = state.squad
   if (q) set({ squad: undefined, squadPicking: undefined, balance: +(state.balance + q.bank).toFixed(2) })
+}
+
+// ---- server mode ----
+const fromServer = (b: ServerBet): Bet => ({
+  ...(b.opts as Partial<Bet>), id: b.id, legs: b.legs, stake: Number(b.stake), placedAt: Date.parse(b.placed_at),
+  status: b.status as Result, payout: Number(b.payout), server: true,
+})
+
+/** Place tickets on the server, which prices every leg itself. */
+async function serverBet(body: Record<string, unknown>, cost: number, clearSlip: boolean, extra: Partial<State> = {}): Promise<string | undefined> {
+  try {
+    const r = await house<{ ids: string[]; tickets: { legs: Leg[]; stake: number; opts: Partial<Bet> }[] }>({ action: 'bet', ...body })
+    const placed = r.tickets.map((t, i): Bet => ({ ...t.opts, id: r.ids[i], legs: t.legs, stake: t.stake, placedAt: Date.now(), status: 'pending', payout: 0, server: true }))
+    set({ balance: r.balance, bets: [...placed, ...state.bets], ...(clearSlip ? { slip: [] } : {}), ...spend(cost), ...extra })
+  } catch (e) { return (e as Error).message }
+}
+
+/** The server's balance and tickets replace the local copies. Tickets that won since the last look earn XP here. */
+export async function syncServer(settleSports = false) {
+  if (!SERVER) return
+  if (settleSports && state.bets.some(b => b.server && b.status === 'pending' && b.legs.some(l => l.sport && l.result === 'pending'))) await house({ action: 'settle' }).catch(() => {})
+  const s = await pull()
+  if (!s) return
+  const before = new Map(state.bets.map(b => [b.id, b]))
+  let xp = 0
+  const bets = s.bets.map(fromServer).map(b => {
+    const old = before.get(b.id)
+    if (b.status !== 'won' || old?.status !== 'pending') return old?.xp ? { ...b, xp: old.xp } : b
+    const x = xpForTicket(b.legs.length, b.payout - b.stake, b.legs.some(l => l.sport) && b.legs.some(l => l.casino))
+    xp += x
+    return { ...b, xp: x }
+  })
+  const ids = new Set(bets.map(b => b.id))
+  set(withXp({ balance: s.balance, bets: [...bets, ...state.bets.filter(b => !ids.has(b.id) && !b.server)] }, xp))
+}
+
+/** Play a casino leg's free round on the server. Returns the leg's result, or an error message. */
+export async function playLegServer(betId: string, legId: string): Promise<{ result: Result; note: string; round: Round } | string> {
+  try {
+    const r = await house<{ round: Round; note: string; legs: Leg[]; status: Result; payout: number }>({ action: 'leg', betId, legId })
+    const hit = r.status === 'won' && state.bets.find(b => b.id === betId)?.status === 'pending'
+    const xp = (r.legs.find(l => l.id === legId)?.result === 'won' ? XP_PER_LEG_HIT : 0)
+    set(withXp({ balance: r.balance, bets: state.bets.map(b => (b.id === betId ? { ...b, legs: r.legs, status: r.status, payout: r.payout } : b)) }, xp))
+    if (hit) syncServer() // award the ticket's XP
+    return { result: r.legs.find(l => l.id === legId)!.result!, note: r.note, round: r.round }
+  } catch (e) { return (e as Error).message }
+}
+
+/** A paid table round dealt by the server. The table animates to the outcome it returns. */
+export async function serverRound<O>(game: CasinoGame, req: Record<string, unknown>): Promise<{ outcome: O; wager: number; returned: number } | string> {
+  try {
+    const r = await house<{ outcome: O; wager: number; returned: number }>({ action: 'round', game, ...req })
+    set({ balance: r.balance, ...spend(r.wager) })
+    return r
+  } catch (e) { return (e as Error).message }
 }

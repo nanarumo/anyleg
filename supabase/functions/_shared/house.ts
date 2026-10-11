@@ -2,9 +2,9 @@
 // game math (src/logic.ts) so odds and payouts match the app exactly. Pure: no Supabase, no Deno, so
 // `node supabase/functions/_shared/house.test.ts` can check it.
 import {
-  CASINO_PICKS, CHAOS_BOOST, FLEX_MIN, PLINKO_RISK, applyTokens, bacReturn, casinoPick, crashPoint, gradeCasino, newShoe,
-  parlayDecimal, parseOdds, playBaccarat, plinkoPath, roulettePays, rouletteWins, roundText, settle, settleFlex, simRound,
-  slotPays, spinReel, toDecimal, type CasinoGame, type Market, type Result, type Round, type Side,
+  CASINO_PICKS, CHAOS_BOOST, FLEX_MIN, PLINKO_RISK, applyTokens, bacReturn, boxStats, casinoPick, crashPoint, gradeCasino, gradeProp,
+  gradeSport, newShoe, parlayDecimal, parseOdds, playBaccarat, plinkoPath, roulettePays, rouletteWins, roundText, settle, settleFlex,
+  simRound, slotPays, spinReel, toDecimal, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side,
 } from '../../../src/logic.ts'
 
 /** Uniform [0, 1) from the OS's crypto RNG. Players can't see or steer it. */
@@ -43,9 +43,9 @@ export function dealRound(req: RoundReq, rand = rng): Dealt | string {
     }
     case 'slots': {
       if (!cents(req.wager)) return 'Bad wager'
-      const line = [spinReel(rand), spinReel(rand), spinReel(rand)]
-      const { mult, name } = slotPays(line)
-      return { wager: req.wager, returned: +(req.wager * mult).toFixed(2), outcome: { slots: { line, mult, name } } }
+      const windows = [0, 1, 2].map(() => [spinReel(rand), spinReel(rand), spinReel(rand)]) // 3 visible symbols per reel
+      const { mult, name } = slotPays(windows.map(w => w[1])) // middle payline
+      return { wager: req.wager, returned: +(req.wager * mult).toFixed(2), outcome: { slots: { windows, mult, name } } }
     }
     case 'plinko': {
       if (!cents(req.wager) || !(req.risk in PLINKO_RISK)) return 'Bad wager'
@@ -70,7 +70,9 @@ export type Leg = {
   [k: string]: unknown
 }
 export type Ticket = { legs: Leg[]; stake: number; opts: { flex?: boolean; sgpMult?: number; boost?: number; chaos?: boolean } }
-export type BetReq = { legs: Leg[]; stake: number; mode?: 'parlay' | 'singles'; flex?: boolean; chaos?: boolean }
+export type BetReq = { legs: Leg[]; stake: number; mode?: 'parlay' | 'singles'; flex?: boolean; chaos?: boolean; daily?: boolean }
+const DAILY_BOOST = 0.3 // same as the app's store.ts
+// ponytail: the server doesn't check these are the day's seeded Daily Boost picks, only one boosted 3-leg parlay per day
 /** Pregame price for a market id like "nfl:401872974:spread:home", from the live feed. */
 export type Board = (leg: Leg) => Promise<{ odds: number; line?: number } | undefined>
 
@@ -107,13 +109,14 @@ export async function priceTickets(req: BetReq, board: Board, rand = rng): Promi
   // A casino leg is a free round, so it can only ride inside a parlay; on its own it would be a free bet.
   if (legs.some(l => l.casino) && (mode === 'singles' || legs.length < 2)) return 'Casino legs only count inside a parlay. Add another leg.'
   if (req.flex && (mode !== 'parlay' || legs.length < FLEX_MIN || parlayDecimal(legs).sgpGames)) return `Flex needs ${FLEX_MIN}+ legs from different games`
+  if (req.daily && (mode !== 'parlay' || legs.length !== 3 || req.chaos || req.flex)) return 'The Daily Boost is one 3-leg parlay'
   const groups = mode === 'parlay' ? [legs] : legs.map(l => [l])
   return groups.map(g => {
     const { dec } = parlayDecimal(g)
     const straight = g.reduce((m, l) => m * toDecimal(l.odds), 1)
     return {
       legs: g, stake: req.stake,
-      opts: { ...(dec < straight - 1e-9 ? { sgpMult: dec / straight } : {}), ...(req.flex ? { flex: true } : {}), ...(req.chaos ? { chaos: true, boost: CHAOS_BOOST } : {}) },
+      opts: { ...(dec < straight - 1e-9 ? { sgpMult: dec / straight } : {}), ...(req.flex ? { flex: true } : {}), ...(req.chaos ? { chaos: true, boost: CHAOS_BOOST } : {}), ...(req.daily ? { daily: true, boost: DAILY_BOOST } : {}) },
     }
   })
 }
@@ -134,6 +137,27 @@ export function playLeg(legs: Leg[], legId: string, rand = rng): { legs: Leg[]; 
   // ponytail: blackjack/mines/poker legs are auto-played; letting the player make the calls needs server-held hands (step 4)
   const round = simRound(leg.casino.game, leg.casino.pick, rand)
   return { round, legs: legs.map(l => (l.id === legId ? { ...l, result: gradeCasino(leg.casino!.pick, round), note: roundText(round) } : l)) }
+}
+
+/** Grade open sports legs whose games are final, from ESPN's summary feed. Undefined = nothing changed. */
+export async function gradeSports(legs: Leg[], fetchJson: (url: string) => Promise<any>, cache = new Map<string, Promise<any>>()): Promise<Leg[] | undefined> {
+  let changed = false
+  const out: Leg[] = []
+  for (const l of legs) {
+    const s = l.sport
+    if (!s || l.result !== 'pending' || !/^[a-z-]+\/[a-z0-9.-]+$/.test(s.path) || !/^\d+$/.test(s.eventId)) { out.push(l); continue }
+    const url = `https://site.api.espn.com/apis/site/v2/sports/${s.path}/summary?event=${s.eventId}`
+    if (!cache.has(url)) cache.set(url, fetchJson(url).catch(() => undefined))
+    const sum = await cache.get(url)
+    const comp = sum?.header?.competitions?.[0]
+    if (!comp?.status?.type?.completed) { out.push(l); continue }
+    const score = (ha: string) => Number(comp.competitors.find((c: any) => c.homeAway === ha)?.score)
+    const p = s.prop as { athleteId: string; stat: PropStat } | undefined
+    const result = p ? gradeProp(p.stat, s.side, s.line!, boxStats(sum.boxscore?.players).get(p.athleteId)) : gradeSport(s.market, s.side, s.line, score('home'), score('away'))
+    changed = true
+    out.push({ ...l, result })
+  }
+  return changed ? out : undefined
 }
 
 // ---- the live feed, for pricing pregame sports legs ----

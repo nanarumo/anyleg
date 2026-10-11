@@ -2,8 +2,11 @@
 //   round: { game, ...RoundReq }        paid table round, dealt here     -> { outcome, wager, returned, balance }
 //   bet:   { legs, stake, mode, flex, chaos }  priced here, stake taken  -> { ids, tickets, balance }
 //   leg:   { betId, legId }             free round for a casino leg      -> { round, note, legs, status, payout, balance }
+//   cancel: { betId }                  undo a ticket within a minute, before anything is graded -> { balance }
+//   settle: {}                          grade open sports legs from finals -> { balance }
+// ponytail: settle runs when the app asks (it polls every 30s); a cron would settle tickets for players who are away
 import { createClient } from 'npm:@supabase/supabase-js@2'
-import { dealRound, espnBoard, grade, playLeg, priceTickets } from '../_shared/house.ts'
+import { dealRound, espnBoard, grade, gradeSports, playLeg, priceTickets } from '../_shared/house.ts'
 
 const cors = {
   'Access-Control-Allow-Origin': '*',
@@ -14,7 +17,8 @@ const fail = (error: string, status = 400) => json({ error }, status)
 const nice = (e: { message?: string } | null) => (e?.message?.includes('insufficient_balance') ? 'Not enough balance' : e?.message?.includes('bet_changed') || e?.message?.includes('duplicate') ? 'That leg was already played' : 'Something went wrong')
 
 const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
-const board = () => espnBoard(async url => { const r = await fetch(url); if (!r.ok) throw new Error(String(r.status)); return r.json() })
+const getJson = async (url: string) => { const r = await fetch(url); if (!r.ok) throw new Error(String(r.status)); return r.json() }
+const board = () => espnBoard(getJson)
 
 Deno.serve(async req => {
   if (req.method === 'OPTIONS') return new Response('ok', { headers: cors })
@@ -31,6 +35,10 @@ Deno.serve(async req => {
   }
 
   if (body.action === 'bet') {
+    if (body.daily) { // one Daily Boost per (UTC) day
+      const { count } = await admin.from('bets').select('id', { count: 'exact', head: true }).eq('user_id', user.id).eq('opts->>daily', 'true').gte('placed_at', new Date().toISOString().slice(0, 10))
+      if (count) return fail('Already bet today. A new boost drops tomorrow.')
+    }
     const tickets = await priceTickets(body, board())
     if (typeof tickets === 'string') return fail(tickets)
     const { data: ids, error } = await admin.rpc('place_tickets', { p_user: user.id, p_tickets: tickets })
@@ -51,6 +59,24 @@ Deno.serve(async req => {
       p_old: bet.legs, p_legs: played.legs, p_status: status, p_payout: payout,
     })
     return error ? fail(nice(error)) : json({ round: played.round, note: leg.note, legs: played.legs, status, payout, balance })
+  }
+
+  if (body.action === 'cancel') {
+    const { data: balance, error } = await admin.rpc('cancel_bet', { p_user: user.id, p_bet: body.betId })
+    return error ? fail("That bet can't be cancelled anymore") : json({ balance })
+  }
+
+  if (body.action === 'settle') {
+    const { data: bets } = await admin.from('bets').select('*').eq('user_id', user.id).eq('status', 'pending')
+    const cache = new Map()
+    for (const bet of bets ?? []) {
+      const legs = await gradeSports(bet.legs, getJson, cache)
+      if (!legs) continue
+      const { status, payout } = grade(legs, Number(bet.stake), bet.opts)
+      await admin.rpc('update_bet', { p_user: user.id, p_bet: bet.id, p_old: bet.legs, p_legs: legs, p_status: status, p_payout: payout })
+    }
+    const { data: p } = await admin.from('profiles').select('balance').eq('id', user.id).single()
+    return json({ balance: p?.balance })
   }
 
   return fail('Unknown action')

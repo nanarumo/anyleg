@@ -3,7 +3,8 @@ import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'rea
 import { fmtOdds, gradeCasino, money, uid, toAmerican, type CasinoGame, type Result, type Round } from './logic.ts'
 import { SquadWatch } from './Squad.tsx'
 import { useLiveGames } from './odds.ts'
-import { pickForSquad, SESSION_START, unclaimedChallenges, unclaimedLevels, canRebet, getState, isCoolingOff, loadSlip, spinReady, resolveLeg, useAccounts, useStore, type Bet, type Leg } from './store.ts'
+import { SERVER } from './server.ts'
+import { pickForSquad, SESSION_START, unclaimedChallenges, unclaimedLevels, canRebet, getState, isCoolingOff, loadSlip, spinReady, resolveLeg, playLegServer, useAccounts, useStore, type Bet, type Leg } from './store.ts'
 import Sportsbook, { legFromPrice } from './Sportsbook.tsx'
 import Swipe from './Swipe.tsx'
 import Roulette from './Roulette.tsx'
@@ -313,7 +314,17 @@ export default function App() {
             {!onBreak && tab === 'Casino' && duelOpen && <DuelScreen onExit={() => setDuelOpen(false)} />}
           </Suspense>
           {tab === 'Profile' && <Profile key={String(toChallenges)} startPage={toChallenges ? 'challenges' : 'home'} onBack={() => setTab(prevTab)} openMyBets={() => setTab('My Bets')} />}
-          {tab === 'My Bets' && <MyBets squadFirst={openSquad} onPickSquadLeg={() => { setOpenSquad(false); setTab('Sportsbook') }} games={live.games} onPlay={(bet, leg) => setPlaying({ bet, leg })} onRebet={() => setSlipOpen(true)} />}
+          {tab === 'My Bets' && <MyBets squadFirst={openSquad} onPickSquadLeg={() => { setOpenSquad(false); setTab('Sportsbook') }} games={live.games} onPlay={async (bet, leg) => {
+            if (!SERVER) return setPlaying({ bet, leg })
+            // ponytail: server legs are dealt without the table animation until each table can play out a server round
+            const r = await playLegServer(bet.id, leg.id)
+            if (typeof r === 'string') return alert(r)
+            const now = getState().bets.find(b => b.id === bet.id)
+            if (r.result === 'won' && now?.status === 'pending') {
+              sfx.legHit()
+              setParty({ title: 'LEG WON!', big: 'PARLAY STILL ALIVE', sub: `${leg.label} ✓ · ${r.note}` })
+            }
+          }} onRebet={() => setSlipOpen(true)} />}
         </main>
         {squadPicking !== undefined && squad && (
           <div className="tail-toast squad-pick-banner">

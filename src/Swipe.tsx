@@ -91,7 +91,7 @@ function DailyBoost({ games, balance }: { games: Game[]; balance: number }) {
           {done ? <p className="muted">You're in for today. Track it in My Bets.</p> : <>
             <div className="quick">{[10, 25, 50, 100].map(v => <button key={v} className={stake === v ? 'on' : ''} disabled={v > balance} onClick={() => setStake(v)}>${v}</button>)}</div>
             {msg && <p className="warn small">{msg}</p>}
-            <button className="cta" onClick={() => { const err = placeDailyBoost(legs, stake); setMsg(err); if (!err) setTimeout(() => setOpen(false), 900) }}>
+            <button className="cta" onClick={async () => { const err = await placeDailyBoost(legs, stake); setMsg(err); if (!err) setTimeout(() => setOpen(false), 900) }}>
               Bet {money(stake)} to win {money(stake * (boosted - 1))}
             </button>
           </>}
@@ -211,10 +211,16 @@ export default function Swipe({ games, onPlayGame, openSlip }: { games: Game[]; 
       flash(`Added ${leg.label} · ${n}-leg ${n > 1 ? 'parlay' : 'slip'}`)
       return true
     }
+    const placed = (err?: string) => {
+      if (err) return flash(err, true)
+      const bet = getState().bets[0]
+      setHistory(h => [...h, { idx, kind: 'bet', betId: bet.id, label: leg.label }])
+      flash(`Bet placed: ${money(prefs.stake)} on ${leg.label} ${fmtOdds(bet.legs[0].odds)}`)
+    }
     const err = placeSingle(leg, prefs.stake)
+    if (err instanceof Promise) { err.then(placed); return true } // server: the card moves on, a refusal shows as a toast
     if (err) { flash(err, true); return false }
-    setHistory(h => [...h, { idx, kind: 'bet', betId: getState().bets[0].id, label: leg.label }])
-    flash(`Bet placed: ${money(prefs.stake)} on ${leg.label} ${fmtOdds(odds)}`)
+    placed()
     return true
   }
 
@@ -257,8 +263,8 @@ export default function Swipe({ games, onPlayGame, openSlip }: { games: Game[]; 
       flash(`Untailed ${last.label}`)
     }
     if (last.kind === 'bet') {
-      if (cancelBet(last.betId)) flash(`Bet on ${last.label} cancelled and refunded`)
-      else flash('That bet already started settling and can’t be undone', true)
+      Promise.resolve(cancelBet(last.betId)).then(ok => ok ? flash(`Bet on ${last.label} cancelled and refunded`)
+        : flash('That bet already started settling and can’t be undone', true))
     }
     setHistory(h => h.slice(0, -1))
     setEnter('down')

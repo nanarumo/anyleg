@@ -40,9 +40,10 @@ export default function BetSlip({ onClose }: { onClose: () => void }) {
   const sports = slip.filter(l => l.sport).length
   const casino = slip.length - sports
 
-  const place = () => {
-    const mystery = chaos ? rollChaos(slip) : undefined
-    const err = placeBet(s, isParlay || chaos ? 'parlay' : 'singles', { boost: useBoost, insure: useInsure, flex, chaos: mystery })
+  const place = async () => {
+    let mystery = chaos ? rollChaos(slip) : undefined
+    const err = await placeBet(s, isParlay || chaos ? 'parlay' : 'singles', { boost: useBoost, insure: useInsure, flex, chaos: mystery })
+    if (mystery && !err) mystery = getState().bets[0].legs.find(l => l.chaos) ?? mystery // the server rolls its own
     if (!err) { setBoost(undefined); setInsure(false); setFlex(false); setChaos(false) }
     const ok = mystery ? `🎲 Chaos leg revealed: ${mystery.label} (${fmtOdds(mystery.odds)}). ${slip.length + 1}-leg parlay locked!`
       : (isParlay ? `${slip.length}-leg ${flex ? 'flex ' : ''}parlay placed!` : 'Bets placed!') + (casino ? ' Play your casino legs free from My Bets.' : '')
