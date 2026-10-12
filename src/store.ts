@@ -2,7 +2,7 @@ import { useSyncExternalStore } from 'react'
 import { SPIN_PRIZES, spinIndex, CHAOS_BOOST, simRound, applyTokens, gradeCasino, roundText, parlayDecimal, settleFlex, FLEX_MIN, toDecimal, uid, setOddsFormat, settle, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side } from './logic.ts'
 import { CHALLENGES, challengeBoost, newlyCompleted, type SkinId } from './challenges.ts'
 import { PRIZES, weekId } from './season.ts'
-import { SERVER, house, pull, type ServerBet } from './server.ts'
+import { SERVER, deleteServerAccount, house, pull, type ServerBet } from './server.ts'
 import { MAX_LEVEL, MAX_PRESTIGE, XP_PER_LEG_HIT, levelOf, prestigeRewards, rewardsAt, xpForCasinoWin, xpForTicket, type Reward } from './progression.ts'
 
 export type Leg = {
@@ -412,10 +412,11 @@ export function claimSeason(week: string, place: number) {
 }
 
 export const switchAccount = (id?: string) => setAccounts(stampLogin({ ...accounts, current: id }))
-/** Permanently erase the signed-in account: its saved wallet, bets and history, and its spot in friends' lists. */
-export function deleteAccount() {
+/** Permanently erase the signed-in account: its server data (throws if the server can't do it), saved wallet, bets and history, and its spot in friends' lists. */
+export async function deleteAccount() {
   const id = accounts.current
   if (!id) return
+  if (SERVER) await deleteServerAccount()
   try { localStorage.removeItem(keyFor(id)) } catch {}
   setAccounts({ current: undefined, list: accounts.list.filter(a => a.id !== id).map(a => ({ ...a, friends: a.friends?.filter(x => x !== id) })) })
 }

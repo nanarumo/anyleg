@@ -112,6 +112,12 @@ Deno.serve(async req => {
   if (!user) return fail('Sign in first', 401)
   const me = user.id
 
+  // In-app account deletion (App Store 5.1.1(v)): removing the auth user cascades to profile, ledger, bets, rounds and hands.
+  if (body.action === 'delete') {
+    const { error } = await admin.auth.admin.deleteUser(me)
+    return error ? fail("Couldn't delete the account. Try again.") : json({ ok: true, balance: 0 })
+  }
+
   if (body.action === 'me') {
     const row = await loadPlayer(me)
     const { h, xp } = await progress(me, row)

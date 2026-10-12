@@ -582,8 +582,8 @@ function Security({ me }: { me: Account }) {
         ))}
       </div>
       <div className="set-row"><div><b>Add another account</b><div className="muted small">Signs you out so someone else can create one.</div></div><button className="pill" onClick={() => switchAccount(undefined)}>Add account</button></div>
-      <div className="set-row"><div><b>Delete account</b><div className="muted small">Permanently erases {me.name} and all of its bets, history and rewards from this device. This can't be undone.</div></div>
-        <button className="pill danger" onClick={() => confirm(`Delete ${me.name} for good? Its balance, bets and history will be erased.`) && deleteAccount()}>Delete</button></div>
+      <div className="set-row"><div><b>Delete account</b><div className="muted small">Permanently erases {me.name} and all of its bets, history and rewards from this device and our server. This can't be undone.</div></div>
+        <button className="pill danger" onClick={() => confirm(`Delete ${me.name} for good? Its balance, bets and history will be erased.`) && deleteAccount().catch(e => alert(e.message))}>Delete</button></div>
     </div>
   )
 }
@@ -681,10 +681,10 @@ const DOCS: Partial<Record<Page, ReactNode>> = {
     <h4>License</h4><p>If you got Anyleg from the App Store, your use is governed by <a href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/" target="_blank" rel="noreferrer">Apple's Standard License Agreement (EULA)</a>; these terms are the game's rules on top of it. Anyleg, not Apple, is responsible for the app, its content, support and any claims about it.</p>
     <h4>Contact</h4><p>Questions or problems: <a href="mailto:anylegsupport@gmail.com">anylegsupport@gmail.com</a></p></>,
   privacy: <>
-    <p>Anyleg does not collect, sell or share personal data. There are no ads, no analytics and no tracking.</p>
-    <h4>What is stored</h4><p>Your username, avatar, play-money balance, bets and settings are saved only on this device. We never see them.</p>
+    <p>Anyleg never asks for your real name, email, phone, location or payment details, and never sells or shares your data. There are no ads, no analytics and no tracking.</p>
+    <h4>What is stored</h4><p>Your device gets an anonymous account on our server (hosted by Supabase). It holds your username, play-money balance, bets, casino rounds, rewards and referral code, used only to run the game. Your avatar and settings stay on this device.</p>
     <h4>Network requests</h4><p>The app downloads public sports scores and odds from ESPN. Those requests carry no account information.</p>
-    <h4>Deleting your data</h4><p>Go to Login &amp; Security and tap Delete account to erase an account and everything saved with it. Uninstalling the app erases all data.</p>
+    <h4>Deleting your data</h4><p>Go to Login &amp; Security and tap Delete account to erase the account and everything tied to it from our server and this device.</p>
     <h4>Contact</h4><p>Privacy questions: <a href="mailto:anylegsupport@gmail.com">anylegsupport@gmail.com</a></p>
   </>,
   rules: <>

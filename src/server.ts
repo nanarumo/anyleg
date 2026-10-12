@@ -31,6 +31,13 @@ export async function house<T>(body: Record<string, unknown>): Promise<T & { bal
   return { ...data, balance: Number(data.balance) }
 }
 
+/** Erase this device's server account and everything tied to it, then sign out (the next launch starts a fresh account). */
+export async function deleteServerAccount() {
+  await house({ action: 'delete' })
+  await sb.auth.signOut({ scope: 'local' })
+  ready = undefined
+}
+
 export type ServerBet = { id: string; legs: any[]; stake: number; status: string; payout: number; opts: Record<string, unknown>; placed_at: string }
 
 /** The player's balance and recent tickets, straight from the database. */
