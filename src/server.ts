@@ -5,8 +5,8 @@ import { createClient } from '@supabase/supabase-js'
 const URL = 'https://mnlloyzjocjsqmowepdo.supabase.co'
 const KEY = 'sb_publishable_-VQQcZiD7gSacK1bnDNf0A_0HLqQ7DK'
 
-/** Server mode is opt-in until every table plays through the server: localStorage anyleg-server = '1'. */
-export const SERVER = (() => { try { return localStorage.getItem('anyleg-server') === '1' } catch { return false } })()
+/** Server mode is on for everyone. localStorage anyleg-server = '0' runs the old on-device wallet (testing only: it can be edited). */
+export const SERVER = (() => { try { return localStorage.getItem('anyleg-server') !== '0' } catch { return true } })()
 
 export const sb = createClient(URL, KEY)
 
