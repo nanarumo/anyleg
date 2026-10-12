@@ -1,0 +1,5 @@
+# Only what the deploy needs: the house function checks sign-ins itself, and the 10-minute schedule calls it without one.
+project_id = "mnlloyzjocjsqmowepdo"
+
+[functions.house]
+verify_jwt = false
