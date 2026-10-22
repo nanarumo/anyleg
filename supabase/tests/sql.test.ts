@@ -15,11 +15,11 @@ await db.exec(`
   create schema auth; create schema extensions;
   grant usage on schema auth, extensions to anon, authenticated;
   create table auth.users (id uuid primary key default gen_random_uuid(), email text, phone text, email_confirmed_at timestamptz,
-    phone_confirmed_at timestamptz, raw_user_meta_data jsonb default '{}');
+    phone_confirmed_at timestamptz, raw_user_meta_data jsonb default '{}', is_anonymous boolean default false);
   create function auth.uid() returns uuid language sql stable as $$ select nullif(current_setting('request.jwt.claim.sub', true), '')::uuid $$;
   create function extensions.digest(t text, alg text) returns bytea language sql immutable as $$ select sha256(convert_to(t, 'UTF8')) $$;
 `)
-for (const f of ['0001_wallet', '0002_settle', '0003_hands', '0004_player', '0006_founders', '0007_exploits'])
+for (const f of ['0001_wallet', '0002_settle', '0003_hands', '0004_player', '0006_founders', '0007_exploits', '0008_reports'])
   await db.exec(readFileSync(new URL(`../migrations/${f}.sql`, import.meta.url), 'utf8'))
 
 const one = async (sql: string, params: unknown[] = []) => (await db.query<any>(sql, params)).rows[0]
@@ -113,5 +113,15 @@ await db.query('delete from auth.users where id = $1', [a])
 const c = await signUp()
 await verify(c, '15550001111')
 assert.equal(await founder(c), false)
+
+
+// Owner reports: every view runs, a paid slots round lands on its own casino line, and players can't read any of it.
+const d = await signUp()
+await db.query("select record_round($1, 'slots', 10, 4, '{}')", [d])
+const slots = await one("select * from reports.house_pnl where product = 'slots'")
+assert.ok(Number(slots.wagered) >= 10 && Number(slots.house_net) <= Number(slots.wagered))
+for (const v of ['totals', 'daily', 'players', 'promos', 'house_pnl']) await db.query(`select * from reports.${v}`)
+assert.ok(Number((await one('select signups from reports.daily limit 1')).signups) > 0)
+await asPlayer(a, () => fails('select * from reports.totals', [], /permission denied/))
 
 console.log('sql ok')
