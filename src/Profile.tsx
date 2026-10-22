@@ -4,10 +4,11 @@ import { fmtOdds, money, toAmerican, toDecimal, type CasinoGame } from './logic.
 import {
   claimSeason, getAccounts, netBetween,
   BASE_AVATARS, BONUS_EVERY_MS, SESSION_START, createAccount, markNotesSeen,
-  REFERRAL, REFERRAL_MILESTONES, addFriend, codeOf, friendStats, redeemReferral, referralCount, removeFriend, setDailyLimit, setFrame, spentToday, unclaimedChallenges, unclaimedLevels, switchAccount, deleteAccount, updateAccount, updateSettings, useAccounts, useStore,
-  type Account, type Bet, type CasinoRound, type Txn,
+  REFERRAL, REFERRAL_MILESTONES, addFriend, codeOf, friendStats, redeemReferral, referralCount, removeFriend, setDailyLimit, setFrame, spentToday, unclaimedChallenges, unclaimedLevels, switchAccount, deleteAccount, syncServer, updateAccount, updateSettings, useAccounts, useStore,
+  type Account, type Bet, type CasinoRound, type Founder, type Txn,
 } from './store.ts'
 import { GAME_NAMES } from './Casino.tsx'
+import { SERVER, sendEmailCode, verifyEmailCode } from './server.ts'
 import { LegIcon } from './LegIcon.tsx'
 import { Insignia, ProgressionPage, RankSummary } from './Rank.tsx'
 import { levelOf, rankAt, rankName } from './progression.ts'
@@ -133,7 +134,7 @@ function Home({ me, go, onBack, openMyBets }: { me: Account; go: (p: Page) => vo
         <Row icon="🏆" label={`Weekly Leaderboard · Season ${seasonNo()}`} onClick={() => go('weekly')} badge={lastWeekPrize(me, st.seasonsClaimed) !== undefined ? 1 : 0} />
         <Row icon="☰" label="Transaction History" onClick={() => go('history')} />
         <Row icon="📊" label="My Stat Sheet" onClick={() => go('stats')} />
-        <Row icon="👥" label="Friends & Referrals" onClick={() => go('refer')} />
+        <Row icon="👥" label={`Friends & Referrals${st.founder?.at ? ` · $${reserved(st.founder)} reserved` : ''}`} onClick={() => go('refer')} />
         <Row icon="🎁" label="My Rewards" onClick={() => go('rewards')} />
       </div>
 
@@ -426,6 +427,62 @@ function Rewards() {
   )
 }
 
+const reserved = (f: Founder) => (f.at ? f.base + f.perFriend * f.friends : 0)
+const RESERVED_TERMS = 'Reserved promo credit: not cash and worth nothing today. It is issued only if Anyleg launches real-money play where you live, only to identity-verified players 21+, only toward a parlay with a casino leg, and is subject to the Founders terms and availability. Anyleg may change or end this offer.'
+
+/** Founders reward: promo credit reserved for real-money play, if Anyleg ever offers it. Server mode only. */
+function FounderCard() {
+  const { founder, email, referrals = 0 } = useStore()
+  if (!SERVER || !founder) return null
+  const waiting = referrals - founder.friends
+  return (
+    <div className="panel center founder">
+      <div className="founder-tag">FOUNDERS REWARD</div>
+      <div className="founder-amt">${founder.at ? reserved(founder) : founder.base}</div>
+      <div className="muted small">{founder.at ? 'waiting for you when real money drops' : 'verify your email to lock it in'}</div>
+      <div className="founder-split">
+        <div><b>${founder.base}</b><span>founder credit</span></div>
+        <div><b>+${founder.perFriend * founder.friends}</b><span>{founder.friends} verified friend{founder.friends === 1 ? '' : 's'}</span></div>
+      </div>
+      <p className="small">Every friend who joins with your code and verifies their email adds <b>${founder.perFriend}</b>. No limit.</p>
+      {waiting > 0 && <p className="muted small">{waiting} friend{waiting === 1 ? '' : 's'} joined with your code but {waiting === 1 ? "hasn't" : "haven't"} verified an email yet.</p>}
+      {founder.at ? email && <p className="muted small">Locked in to {email}</p> : <EmailSignIn />}
+      <p className="muted small founder-terms">{RESERVED_TERMS}</p>
+    </div>
+  )
+}
+
+/** Verify an email with a 6-digit code: adds it to this account, or signs into the account that already has it. */
+function EmailSignIn() {
+  const [email, setEmail] = useState('')
+  const [code, setCode] = useState('')
+  const [mode, setMode] = useState<'link' | 'signin'>()
+  const [msg, setMsg] = useState<{ text: string; bad?: boolean }>()
+  const [busy, setBusy] = useState(false)
+  const run = (f: () => Promise<void>) => async (e: FormEvent) => {
+    e.preventDefault(); setBusy(true); setMsg(undefined)
+    try { await f() } catch (err) { setMsg({ text: (err as Error).message, bad: true }) }
+    setBusy(false)
+  }
+  const send = run(async () => {
+    const m = await sendEmailCode(email.trim())
+    setMode(m)
+    setMsg({ text: m === 'link' ? `We emailed a 6-digit code to ${email.trim()}.`
+      : `${email.trim()} already has an account. Enter the code we emailed to sign in to it. This device's current play money stays with its old account.` })
+  })
+  const verify = run(async () => { await verifyEmailCode(email.trim(), code.trim(), mode!); await syncServer(); setMsg({ text: 'Email verified' }) })
+  return (
+    <form className="email-form" onSubmit={mode ? verify : send}>
+      {mode
+        ? <input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code" maxLength={6} required />
+        : <input type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" placeholder="you@email.com" required />}
+      <button className="cta" disabled={busy}>{mode ? 'Verify' : 'Send code'}</button>
+      {mode && <button type="button" className="ghost" onClick={() => { setMode(undefined); setCode(''); setMsg(undefined) }}>Use a different email</button>}
+      {msg && <p className={`small ${msg.bad ? 'warn' : 'win'}`}>{msg.text}</p>}
+    </form>
+  )
+}
+
 function Refer({ me }: { me: Account }) {
   const { list } = useAccounts()
   const code = codeOf(me)
@@ -447,6 +504,7 @@ function Refer({ me }: { me: Account }) {
 
   return (
     <>
+      <FounderCard />
       <div className="panel center refer-hero">
         <div className="refer-art">👥</div>
         <h3>Invite friends, both of you win</h3>
@@ -570,9 +628,13 @@ function Customize({ me }: { me: Account }) {
 
 function Security({ me }: { me: Account }) {
   const { list } = useAccounts()
+  const { email } = useStore()
   return (
     <div className="panel">
-      <p className="muted small">Accounts are stored in this browser on this device. Anyleg uses play money only, so there are no passwords yet.</p>
+      {SERVER && (email
+        ? <div className="set-row"><div><b>Email</b><div className="muted small">Signed in as {email}. Sign in with it on any device to get this account back.</div></div></div>
+        : <><b>Add your email</b><p className="muted small">Keeps this account safe if you lose your phone, and locks in your Founders reward. Already verified one on another device? Enter it to sign back in.</p><EmailSignIn /></>)}
+      <p className="muted small">Your avatar and look are stored on this device. Anyleg uses play money only, so there are no passwords.</p>
       <b>Accounts on this device</b>
       <div className="acct-list">
         {list.map(a => (
@@ -674,6 +736,7 @@ const DOCS: Partial<Record<Page, ReactNode>> = {
   terms: <><p>Anyleg is a free-to-play entertainment app for adults 18+. It uses play money only: there is no real-money gambling, and nothing here can be bought, deposited, withdrawn or exchanged for real money, prizes or anything of value. Leaderboard prizes and rewards are all play money or cosmetics. Odds are shown for entertainment and may lag the real market. Success here does not mean future success at real-money gambling.</p>
     <h4>Not affiliated</h4><p>Anyleg is not affiliated with, endorsed or sponsored by any sports league, team, player, sportsbook or casino. League, team and player names belong to their owners and appear only to identify real games and stats. Anyleg does not use league or team logos or player photos.</p>
     <h4>Play money</h4><p>Play money and rewards have no cash value. They can't be bought, sold, transferred between accounts or redeemed for anything. Selling or trading accounts or play money outside the app is not allowed, and Anyleg may reset any account involved.</p>
+    <h4>Founders reward</h4><p>Players who verify an email before Anyleg offers real-money play reserve $20 of promo credit, plus $5 for each friend who joins with their code and verifies an email, with no limit. {RESERVED_TERMS} Anyleg does not offer real-money play today and may never do so. Accounts made to collect extra referrals, or one person using several emails, don't count.</p>
     <h4>Bots</h4><p>Season leaderboard bots, squad bots and house creators are computer players, and they're labeled as bots.</p>
     <h4>Sports data</h4><p>Scores, schedules and lines come from public ESPN feeds. They can be delayed or wrong, and a feed outage can delay settlement.</p>
     <h4>Your controls</h4><p>Set a daily play limit, session reminders or a break of up to a year in My Budget and Controls. If gambling stops being fun, call 1-800-GAMBLER.</p>
@@ -681,8 +744,9 @@ const DOCS: Partial<Record<Page, ReactNode>> = {
     <h4>License</h4><p>If you got Anyleg from the App Store, your use is governed by <a href="https://www.apple.com/legal/internet-services/itunes/dev/stdeula/" target="_blank" rel="noreferrer">Apple's Standard License Agreement (EULA)</a>; these terms are the game's rules on top of it. Anyleg, not Apple, is responsible for the app, its content, support and any claims about it.</p>
     <h4>Contact</h4><p>Questions or problems: <a href="mailto:anylegsupport@gmail.com">anylegsupport@gmail.com</a></p></>,
   privacy: <>
-    <p>Anyleg never asks for your real name, email, phone, location or payment details, and never sells or shares your data. There are no ads, no analytics and no tracking.</p>
-    <h4>What is stored</h4><p>Your device gets an anonymous account on our server (hosted by Supabase). It holds your username, play-money balance, bets, casino rounds, rewards and referral code, used only to run the game. Your avatar and settings stay on this device.</p>
+    <p>Anyleg never asks for your real name, phone, location or payment details, and never sells or shares your data. There are no ads, no analytics and no tracking.</p>
+    <h4>What is stored</h4><p>Your device gets an account on our server (hosted by Supabase). It holds your username, play-money balance, bets, casino rounds, rewards, referral code and who joined with it, used only to run the game. Your avatar and settings stay on this device.</p>
+    <h4>Email</h4><p>Adding an email is optional. We use it only to sign you in with a one-time code and to record your Founders reward. We don't send marketing.</p>
     <h4>Network requests</h4><p>The app downloads public sports scores and odds from ESPN. Those requests carry no account information.</p>
     <h4>Deleting your data</h4><p>Go to Login &amp; Security and tap Delete account to erase the account and everything tied to it from our server and this device.</p>
     <h4>Contact</h4><p>Privacy questions: <a href="mailto:anylegsupport@gmail.com">anylegsupport@gmail.com</a></p>

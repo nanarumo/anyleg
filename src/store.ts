@@ -97,11 +97,16 @@ type State = {
   seasonsClaimed?: string[] // weekly leaderboard prizes collected, by week id
   code?: string // server mode: this player's referral code
   referrals?: number // server mode: how many joined with it
+  email?: string // server mode: the verified email on this account
+  founder?: Founder // server mode: the Founders reward
   prestigeStartedAt?: number // challenges only count play since this moment
   prestigeUp?: { prestige: number; at: number; rewards: Reward[] } // newest prestige, for the celebration
   squad?: Squad
   squadPicking?: number // member whose squad leg the next tapped line becomes (instead of going in the slip)
 }
+
+/** Promo credit reserved for real-money play, if it launches: $base once verified (`at`) + $perFriend per verified friend. */
+export type Founder = { at: string | null; friends: number; base: number; perFriend: number }
 
 /** Local profile. Each account has its own wallet and history on this device (no server yet, so no password). */
 export type Account = {
@@ -747,6 +752,7 @@ async function serverBetRaw(body: Record<string, unknown>, cost: number, clearSl
 type Me = {
   balance: number; squadBank: number; inv: Inventory; xp: number; prestige: number; prestigeStartedAt: string; claimedLevels: string[]
   challengesClaimed: string[]; challengesDone: string[]; seasonsClaimed: string[]; code: string; referrals: number
+  email: string | null; founder: Founder
 }
 /** The server's balance, tickets, XP, tokens and claims replace the local copies. */
 export async function syncServer(settleSports = false) {
@@ -760,7 +766,7 @@ export async function syncServer(settleSports = false) {
   const patch: Partial<State> = {
     balance: me.balance, inv: { ...NO_INV, ...me.inv }, bets: [...bets, ...state.bets.filter(b => !ids.has(b.id) && !b.server)],
     prestige: me.prestige, prestigeStartedAt: Date.parse(me.prestigeStartedAt), claimedLevels: me.claimedLevels, challengesClaimed: me.challengesClaimed,
-    challengesDone: [...new Set([...state.challengesDone, ...me.challengesDone])], seasonsClaimed: me.seasonsClaimed, code: me.code, referrals: me.referrals,
+    challengesDone: [...new Set([...state.challengesDone, ...me.challengesDone])], seasonsClaimed: me.seasonsClaimed, code: me.code, referrals: me.referrals, email: me.email || undefined, founder: me.founder,
     ...(me.referrals >= 5 ? { unlocked: unlockAll([{ kind: 'frame', name: 'Recruiter', color: '#22d3ee' }]) } : {}), // 5 friends joined
     ...(state.squad ? { squad: { ...state.squad, bank: Number(me.squadBank) } } : {}),
   }

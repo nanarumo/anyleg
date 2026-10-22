@@ -31,6 +31,29 @@ export async function house<T>(body: Record<string, unknown>): Promise<T & { bal
   return { ...data, balance: Number(data.balance) }
 }
 
+/**
+ * Email a 6-digit code. An anonymous account keeps everything by adding the email to itself ('link');
+ * an email that already has an account signs into that account instead ('signin').
+ */
+export async function sendEmailCode(email: string): Promise<'link' | 'signin'> {
+  await signedIn()
+  const { data } = await sb.auth.getUser()
+  if (data.user?.is_anonymous) {
+    const { error } = await sb.auth.updateUser({ email })
+    if (!error) return 'link'
+    if (!/already|registered|exists/i.test(error.message)) throw error
+  }
+  const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: false } })
+  if (error) throw error
+  return 'signin'
+}
+
+/** Check the emailed code; the session is then the email account. */
+export async function verifyEmailCode(email: string, token: string, mode: 'link' | 'signin') {
+  const { error } = await sb.auth.verifyOtp({ email, token, type: mode === 'link' ? 'email_change' : 'email' })
+  if (error) throw error
+}
+
 /** Erase this device's server account and everything tied to it, then sign out (the next launch starts a fresh account). */
 export async function deleteServerAccount() {
   await house({ action: 'delete' })

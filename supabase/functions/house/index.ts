@@ -1,5 +1,5 @@
 // POST /functions/v1/house with the player's sign-in token. Body: { action, ... }
-//   me:     {}                                    balance, XP, tokens, claims, squad bank, referral code
+//   me:     {}                                    balance, XP, tokens, claims, squad bank, referral code, email, founders reward
 //   round:  { game, ...RoundReq }                 paid table round (slots { free } spends a Free Spin) -> { outcome, wager, returned, note, balance }
 //   bet:    { legs, stake, mode, flex, chaos, daily, boost, insure, squad }  priced here -> { ids, tickets, balance, inv }
 //   leg:    { betId, legId }                      free round for a casino leg      -> { round, note, legs, status, payout, balance }
@@ -36,12 +36,14 @@ const nice = (e: { message?: string } | null) =>
 const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
 const getJson = async (url: string) => { const r = await fetch(url); if (!r.ok) throw new Error(String(r.status)); return r.json() }
 const board = () => espnBoard(getJson)
+/** Founders reward, in promo dollars reserved for real-money play (if it launches). Matches reports.founders in 0006_founders.sql. */
+const FOUNDER = { base: 20, perFriend: 5 }
 const pay = (user: string, amount: number, kind: string, ref?: string) =>
   admin.rpc('wallet_apply', { p_user: user, p_delta: amount, p_kind: kind, p_ref: ref ?? null })
 
 // ---- player progress: the profiles row is versioned (pver) so two requests can't both spend the same token ----
-const PLAYER = 'balance, squad_bank, inv, prestige, prestige_started_at, claimed_levels, challenges_claimed, seasons_claimed, xp_bonus, pver, code, referred_by, created_at'
-type Row = Player & { balance: number; squad_bank: number; pver: number; code: string; referred_by: string | null; created_at: string }
+const PLAYER = 'balance, squad_bank, inv, prestige, prestige_started_at, claimed_levels, challenges_claimed, seasons_claimed, xp_bonus, pver, code, referred_by, created_at, founder_at'
+type Row = Player & { balance: number; squad_bank: number; pver: number; code: string; referred_by: string | null; created_at: string; founder_at: string | null }
 const loadPlayer = async (id: string) => (await admin.from('profiles').select(PLAYER).eq('id', id).single()).data as Row
 /** Save progress columns if nobody changed them since `row` was read. */
 async function savePlayer(id: string, row: Row, next: Partial<Player>) {
@@ -121,12 +123,16 @@ Deno.serve(async req => {
   if (body.action === 'me') {
     const row = await loadPlayer(me)
     const { h, xp } = await progress(me, row)
-    const { count } = await admin.from('profiles').select('id', { count: 'exact', head: true }).eq('referred_by', me)
+    const [{ count }, { count: verified }] = await Promise.all([
+      admin.from('profiles').select('id', { count: 'exact', head: true }).eq('referred_by', me),
+      admin.from('profiles').select('id', { count: 'exact', head: true }).eq('referred_by', me).not('founder_at', 'is', null),
+    ])
     return json({
       balance: row.balance, squadBank: row.squad_bank, inv: row.inv, xp, prestige: row.prestige, prestigeStartedAt: row.prestige_started_at,
       claimedLevels: row.claimed_levels, challengesClaimed: row.challenges_claimed, seasonsClaimed: row.seasons_claimed,
       challengesDone: CHALLENGES.filter(c => (c.minPrestige ?? 0) <= row.prestige && c.progress(h) >= c.goal).map(c => c.id),
       code: row.code, referredBy: row.referred_by, referrals: count ?? 0, createdAt: row.created_at,
+      email: user.email ?? null, founder: { at: row.founder_at, friends: verified ?? 0, ...FOUNDER },
     })
   }
 
