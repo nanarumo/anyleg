@@ -15,9 +15,10 @@
 // Deployed with --no-verify-jwt: the cron call carries no sign-in, and every other action checks the token itself.
 import { createClient } from 'npm:@supabase/supabase-js@2'
 import { SPIN_PRIZES, spinIndex } from '../../../src/logic.ts'
+import { LIVE_DELAY_S } from '../../../src/live.ts'
 import { CHALLENGES } from '../../../src/challenges.ts'
 import {
-  cashOutQuote, closeHand, rng, dealRound, espnBoard, grade, gradeSports, handNote, handOver, handView, handWager, moveHand, playLeg,
+  cashOutQuote, recheckLive, closeHand, rng, dealRound, espnBoard, grade, gradeSports, handNote, handOver, handView, handWager, moveHand, playLeg,
   priceTickets, startHand, type Hand,
 } from '../_shared/house.ts'
 import { PRIZES, claimChallenge, claimLevels, enterPrestige, historyOf, seasonPlace, xpOf, type BetRow, type Player, type RoundRow } from '../_shared/player.ts'
@@ -178,6 +179,11 @@ Deno.serve(async req => {
     }
     const tickets = await priceTickets(body, board())
     if (typeof tickets === 'string') return fail(tickets)
+    if (tickets.some(t => t.legs.some(l => l.id.includes(':live:')))) { // the live delay: wait, then re-price from a fresh feed
+      await new Promise(r => setTimeout(r, LIVE_DELAY_S * 1000))
+      const moved = await recheckLive(tickets, board())
+      if (moved) return fail(moved)
+    }
     // Boost and insurance tokens are spent before the ticket goes in, and given back if it doesn't.
     const spend = (row: Row, dir: 1 | -1) => ({ ...row.inv, ...(body.boost ? { [body.boost]: row.inv[body.boost as 'boost25'] + dir } : {}), ...(body.insure ? { insurance: row.inv.insurance + dir } : {}) })
     if (body.boost || body.insure) {

@@ -1,4 +1,5 @@
 import { useRef, useState } from 'react'
+import { LIVE_DELAY_S } from './live.ts'
 import { CHAOS_BOOST, FLEX_MIN, flexMax, fmtOdds, money, parlayDecimal, settleFlex, toAmerican, toDecimal } from './logic.ts'
 import { BOOST_PCT, MAX_LEGS, clearSlip, getState, myName, placeBet, removeLeg, useAccounts, useStore, type BoostKey, type Leg } from './store.ts'
 import type { CasinoGame } from './logic.ts'
@@ -17,6 +18,7 @@ export default function BetSlip({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<'parlay' | 'singles'>('parlay')
   const [stake, setStake] = useState(() => String(getState().settings.defaultStake))
   const [msg, setMsg] = useState<string>()
+  const [busy, setBusy] = useState(false)
   const s = Number(stake) > 0 ? Number(stake) : 0
   const stakeInput = useRef<HTMLInputElement>(null)
   const casinoIn = slip.some(l => l.casino)
@@ -39,10 +41,14 @@ export default function BetSlip({ onClose }: { onClose: () => void }) {
   const boosts = (Object.keys(BOOST_PCT) as BoostKey[]).filter(k => inv[k] > 0)
   const sports = slip.filter(l => l.sport).length
   const casino = slip.length - sports
+  const live = slip.some(l => l.id.includes(':live:'))
 
   const place = async () => {
     let mystery = chaos ? rollChaos(slip) : undefined
+    if (live) setMsg(`⏱ Live bet: holding ${LIVE_DELAY_S} seconds to match the ESPN feed…`)
+    setBusy(true)
     const err = await placeBet(s, isParlay || chaos ? 'parlay' : 'singles', { boost: useBoost, insure: useInsure, flex, chaos: mystery })
+    setBusy(false)
     if (mystery && !err) mystery = getState().bets[0].legs.find(l => l.chaos) ?? mystery // the server rolls its own
     if (!err) { setBoost(undefined); setInsure(false); setFlex(false); setChaos(false) }
     const ok = mystery ? `🎲 Chaos leg revealed: ${mystery.label} (${fmtOdds(mystery.odds)}). ${slip.length + 1}-leg parlay locked!`
@@ -146,7 +152,8 @@ export default function BetSlip({ onClose }: { onClose: () => void }) {
           <div className="row"><span>Total wager</span><b>{money(cost)}</b></div>
           {flex && s > 0 && <div className="row"><span>1 leg misses</span><b>{money(Math.min(...oneMiss))}–{money(Math.max(...oneMiss))}</b></div>}
           <div className="row"><span>{flex ? 'All hit, to win' : chaos ? 'To win before the chaos leg' : 'To win'}{useBoost ? ` (+${BOOST_PCT[useBoost]}% boost)` : ''}</span><b className="win">{money(toWin)}</b></div>
-          <button className="primary" onClick={place} disabled={!s || cost > balance || (casino > 0 && slip.length < 2 && !chaos)}>
+          {live && <p className="muted small">⏱ Live bets have a {LIVE_DELAY_S}-second delay so prices stay in line with the ESPN feed, which runs behind the broadcast. If the price shortens during the delay, the bet isn't placed.</p>}
+          <button className="primary" onClick={place} disabled={busy || !s || cost > balance || (casino > 0 && slip.length < 2 && !chaos)}>
             {chaos ? `🎲 Lock it · reveal the chaos leg` : isParlay ? `Place parlay · pays ${money(s + toWin)}` : `Place ${slip.length > 1 ? `${slip.length} bets` : 'bet'} · ${money(cost)}`}
           </button>
           <button className="link" onClick={e => leave(e, () => { clearSlip(); onClose() })}>Clear slip</button>

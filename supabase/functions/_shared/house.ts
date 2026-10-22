@@ -306,6 +306,16 @@ export async function priceTickets(req: BetReq, board: Board, rand = rng): Promi
   })
 }
 
+/** After the live delay: each live leg must still be on the board at a price no shorter than the one accepted. */
+export async function recheckLive(tickets: Ticket[], board: Board): Promise<string | undefined> {
+  for (const l of tickets.flatMap(t => t.legs)) {
+    if (!l.id.includes(':live:')) continue
+    const p = await board(l)
+    if (p?.prob === undefined || !liveOpen(p.prob) || toDecimal(p.odds) < toDecimal(l.odds) - 1e-9)
+      return `${l.label}: the price moved during the live delay. Check the new odds and try again.`
+  }
+}
+
 /** Same grading the app does in gradeLegs, for one ticket. */
 export function grade(legs: Leg[], stake: number, opts: Ticket['opts'] & { insured?: boolean }) {
   const results = legs.map(l => l.result ?? 'pending')

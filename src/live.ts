@@ -20,6 +20,9 @@ const HOLD = 1.045 // ~4.5% book margin across both sides
 const clamp = (p: number) => Math.min(0.97, Math.max(0.03, p))
 /** Live lines come off the board past a 90% chance: the clamp and the 1.01 floor would pay a near-lock better than its odds. */
 export const liveOpen = (p: number) => p <= 0.9
+/** Live bets wait this long and are re-priced before they go in. ESPN's feed runs behind the broadcast, so without it
+ * someone watching a score happen could bet before the line catches up. */
+export const LIVE_DELAY_S = 15
 export const priceOf = (p: number) => toAmerican(1 / (clamp(p) * HOLD) < 1.01 ? 1.01 : 1 / (clamp(p) * HOLD))
 
 /** Standard normal CDF (Abramowitz-Stegun 7.1.26). */

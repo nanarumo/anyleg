@@ -6,6 +6,7 @@ import {
   PROP_STATS, parlayDecimal, fmtOdds, money, toAmerican, toDecimal, type CasinoGame, type Market,
 } from './logic.ts'
 import { LEAGUES, type Game } from './odds.ts'
+import { LIVE_DELAY_S } from './live.ts'
 import { DAILY_BOOST, recordOf, noteTaste, cancelBet, getState, placeDailyBoost, placeSingle, removeLeg, today, toggleLeg, updateSettings, useStore, type Leg, type SwipePrefs } from './store.ts'
 import { LegIcon } from './LegIcon.tsx'
 import { legFromPrice, useProps } from './Sportsbook.tsx'
@@ -217,6 +218,7 @@ export default function Swipe({ games, onPlayGame, openSlip }: { games: Game[]; 
       setHistory(h => [...h, { idx, kind: 'bet', betId: bet.id, label: leg.label }])
       flash(`Bet placed: ${money(prefs.stake)} on ${leg.label} ${fmtOdds(bet.legs[0].odds)}`)
     }
+    if (leg.id.includes(':live:')) flash(`⏱ Live bet: holding ${LIVE_DELAY_S} seconds to match the ESPN feed…`)
     const err = placeSingle(leg, prefs.stake)
     if (err instanceof Promise) { err.then(placed); return true } // server: the card moves on, a refusal shows as a toast
     if (err) { flash(err, true); return false }

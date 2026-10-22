@@ -1,6 +1,6 @@
 // node supabase/functions/_shared/house.test.ts
 import assert from 'node:assert/strict'
-import { cashOutQuote, closeHand, handView, moveHand, startHand, dealRound, espnBoard, grade, gradeSports, playLeg, priceTickets, type Board, type Leg } from './house.ts'
+import { recheckLive, cashOutQuote, closeHand, handView, moveHand, startHand, dealRound, espnBoard, grade, gradeSports, playLeg, priceTickets, type Board, type Leg } from './house.ts'
 
 const fixed = (x: number) => () => x
 
@@ -93,6 +93,16 @@ assert.equal((await priceTickets({ legs: [ml, total, prop('p:over', 250.5)], sta
 const liveFeed = { events: [{ id: '2', status: { type: { state: 'in' }, period: 4, displayClock: '1:00' }, competitions: [{ competitors: [{ homeAway: 'home', score: '40' }, { homeAway: 'away', score: '0' }] }] }] }
 const lock: Leg = { ...ml, id: 'nfl:2:live:ml:home', sport: { ...ml.sport!, eventId: '2' } }
 assert.match(await priceTickets({ legs: [lock], stake: 10 }, espnBoard(async () => liveFeed)) as string, /off the board/)
+// Live delay: after the wait the leg is re-priced; a score that shortened the price (bet placed off the broadcast,
+// ahead of the feed) refuses the ticket, a price that held or lengthened goes in at the accepted odds.
+const tied = (home: string) => ({ events: [{ id: '2', status: { type: { state: 'in' }, period: 2, displayClock: '5:00' }, competitions: [{ competitors: [{ homeAway: 'home', score: home }, { homeAway: 'away', score: '0' }] }] }] })
+const liveHome: Leg = { ...lock, label: 'Home ML' }
+const accepted = await priceTickets({ legs: [liveHome], stake: 10 }, espnBoard(async () => tied('0'))) as any
+assert.equal(typeof accepted, 'object')
+assert.equal(await recheckLive(accepted, espnBoard(async () => tied('0'))), undefined)
+assert.match(await recheckLive(accepted, espnBoard(async () => tied('7'))) as string, /moved during the live delay/)
+assert.equal(await recheckLive(accepted, espnBoard(async () => ({ events: [{ ...tied('0').events[0], competitions: [{ competitors: [{ homeAway: 'home', score: '0' }, { homeAway: 'away', score: '7' }] }] }] }))), undefined)
+assert.equal(await recheckLive(t, board), undefined) // pregame tickets aren't held
 // Pregame lines close at the scheduled start, even if the feed still says "pre".
 const late = { events: [{ ...feed.events[0], date: new Date(Date.now() - 6e4).toISOString() }] }
 assert.match(await priceTickets({ legs: [ml, red], stake: 10 }, espnBoard(async () => late)) as string, /off the board/)
