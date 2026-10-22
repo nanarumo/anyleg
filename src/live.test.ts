@@ -9,9 +9,10 @@ assert.ok(Math.abs(remaining('nba', 4, '6:00') - 0.125) < 1e-9)
 assert.ok(Math.abs(remaining('epl', 2, "67'") - 23 / 90) < 1e-9)
 
 const ml = (ps: ReturnType<typeof livePrices>, side: string) => ps.find(p => p.market === 'ml' && p.side === side)!.odds
-// Up 14 in the 4th: big favorite; tied at kickoff with no pregame edge: near pick'em with the hold on both sides.
+// Up 14 in the 4th: past 90% the line comes off the board (a near-lock at 1.01 beats its odds), the dog is a long shot; tied at kickoff with no pregame edge: near pick'em with the hold on both sides.
 const up14 = livePrices('a', { league: 'nfl', home: 24, away: 10, period: 4, clock: '5:00', pre: { margin: 0, total: 44 } })
-assert.ok(ml(up14, 'home') < -1000 && ml(up14, 'away') > 600)
+assert.equal(up14.find(p => p.market === 'ml' && p.side === 'home'), undefined)
+assert.ok(ml(up14, 'away') > 600)
 const even = livePrices('b', { league: 'nfl', home: 0, away: 0, period: 1, clock: '15:00', pre: { margin: 0, total: 44 } })
 assert.ok(ml(even, 'home') < -100 && ml(even, 'home') > -120)
 const t = even.find(p => p.market === 'total' && p.side === 'over')!

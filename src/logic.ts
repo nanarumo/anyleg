@@ -65,6 +65,11 @@ export function parlayDecimal(legs: { odds: number; sport?: { eventId: string } 
 // ---- sports grading ----
 export type Market = 'ml' | 'spread' | 'total' | 'prop'
 export type Side = 'home' | 'away' | 'draw' | 'over' | 'under'
+/** A game's legs that move together: its side (moneyline or spread), its total, or one player's stat line. One pick each per game. */
+export const marketFamily = (s: { market: Market; prop?: unknown }) => {
+  const p = s.prop as { athleteId?: unknown; stat?: unknown } | undefined
+  return p ? `prop:${p.athleteId}:${p.stat}` : s.market === 'total' ? 'total' : 'side'
+}
 
 export function gradeSport(market: Market, side: Side, line: number | undefined, home: number, away: number): Result {
   const cmp = (a: number, b: number): Result => (a > b ? 'won' : a < b ? 'lost' : 'push')

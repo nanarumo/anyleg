@@ -18,6 +18,8 @@ const SPORT: Record<string, { sd: number; total: number; periods: number; minute
 
 const HOLD = 1.045 // ~4.5% book margin across both sides
 const clamp = (p: number) => Math.min(0.97, Math.max(0.03, p))
+/** Live lines come off the board past a 90% chance: the clamp and the 1.01 floor would pay a near-lock better than its odds. */
+export const liveOpen = (p: number) => p <= 0.9
 export const priceOf = (p: number) => toAmerican(1 / (clamp(p) * HOLD) < 1.01 ? 1.01 : 1 / (clamp(p) * HOLD))
 
 /** Standard normal CDF (Abramowitz-Stegun 7.1.26). */
@@ -108,7 +110,7 @@ export function livePrices(key: string, g: LiveInput): LivePrice[] {
   const tl = post('total', p.total)
   out.push({ market: 'total', side: 'over', line: tl, odds: priceOf(legProb(g, 'total', 'over', tl)) },
     { market: 'total', side: 'under', line: tl, odds: priceOf(legProb(g, 'total', 'under', tl)) })
-  return out
+  return out.filter(x => liveOpen(legProb(g, x.market, x.side, x.line)))
 }
 
 // ---- cash out ----

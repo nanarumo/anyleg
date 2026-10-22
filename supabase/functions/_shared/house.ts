@@ -4,16 +4,17 @@
 import {
   CASINO_PICKS, CHAOS_BOOST, bjOutcome, buster, canSplit, handValue, isBlackjack, luckyLadies, perfectPairs, playDealer, twentyOnePlus3, FLEX_MIN, PLINKO_RISK, applyTokens, bacReturn, bacValue, boxStats, rouletteColor, casinoPick, crashPoint, gradeCasino, gradeProp,
   gradeSport, minesMult, MINES_TILES, newShoe, placeMines, pokerHand, parlayDecimal, parseOdds, playBaccarat, plinkoPath, roulettePays, rouletteWins, roundText, settle, settleFlex,
-  simRound, slotPays, spinReel, toDecimal, type Card, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side,
+  simRound, slotPays, spinReel, toDecimal, marketFamily, type Card, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side,
 } from '../../../src/logic.ts'
-import { cashOutValue, legProb, priceOf, type LiveInput } from '../../../src/live.ts'
+import { cashOutValue, legProb, liveOpen, priceOf, type LiveInput } from '../../../src/live.ts'
 import { PROP_ODDS, fetchProps } from '../../../src/props.ts'
 
 /** Uniform [0, 1) from the OS's crypto RNG. Players can't see or steer it. */
 export const rng = () => crypto.getRandomValues(new Uint32Array(1))[0] / 2 ** 32
 
 export const FREE_SPIN_VALUE = 5 // same as the app's store.ts
-const cents = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n > 0 && n <= 1e7 && Math.round(n * 100) === n * 100
+// $1 minimum: payouts round to the cent, and at a penny stake rounding up turns a -110 bet or banker into a winner.
+const cents = (n: unknown) => typeof n === 'number' && Number.isFinite(n) && n >= 1 && n <= 1e7 && Math.round(n * 100) === n * 100
 const sum = (xs: { amount: number }[]) => +xs.reduce((t, x) => t + x.amount, 0).toFixed(2)
 
 // ---- paid table rounds the server deals in one shot ----
@@ -249,8 +250,7 @@ const sameLine = (a?: number, b?: number) => a === b || (a !== undefined && b !=
 export async function priceTickets(req: BetReq, board: Board, rand = rng): Promise<Ticket[] | string> {
   if (!Array.isArray(req?.legs) || !req.legs.length) return 'Add a pick first'
   if (req.legs.length > MAX_LEGS) return `Max ${MAX_LEGS} legs`
-  if (!cents(req.stake)) return 'Enter a stake'
-  if (new Set(req.legs.map(l => l.id)).size !== req.legs.length) return 'Same leg twice'
+  if (!cents(req.stake)) return 'Stakes start at $1'
   const legs: Leg[] = []
   for (const l of req.legs) {
     if (l.casino) {
@@ -261,6 +261,7 @@ export async function priceTickets(req: BetReq, board: Board, rand = rng): Promi
       const price = await board(l)
       if (!price) return `${l.label} is off the board`
       if (!sameLine(price.line, l.sport.line)) return `${l.label}: the line moved`
+      if (price.prob !== undefined && !liveOpen(price.prob)) return `${l.label} is off the board`
       const s = l.sport, p = s.prop as { athleteId?: unknown; stat?: unknown } | undefined
       const str = (x: unknown, n: number) => (typeof x === 'string' ? x.slice(0, n) : '')
       legs.push({ // only the fields the app needs: nothing else from the request rides along
@@ -272,6 +273,12 @@ export async function priceTickets(req: BetReq, board: Board, rand = rng): Promi
       })
     } else return 'Unknown leg'
   }
+  // Checked on the house's ids: two copies of one casino leg could never both be played.
+  if (new Set(legs.map(l => l.id)).size !== legs.length) return 'Same leg twice'
+  // One side and one total per game, one line per player stat: a team's ML with its spread, or a prop with its own
+  // ladder rung, hit together far more often than the 80% same-game price assumes.
+  const fam = legs.filter(l => l.sport).map(l => `${l.sport!.eventId}:${marketFamily(l.sport!)}`)
+  if (new Set(fam).size !== fam.length) return 'Pick one side, one total and one line per player in each game'
   const mode = req.chaos ? 'parlay' : req.mode ?? 'parlay'
   if (req.chaos) {
     if (req.flex) return 'The chaos leg rides on one parlay ticket'
@@ -285,7 +292,7 @@ export async function priceTickets(req: BetReq, board: Board, rand = rng): Promi
   if (req.flex && (mode !== 'parlay' || legs.length < FLEX_MIN || parlayDecimal(legs).sgpGames)) return `Flex needs ${FLEX_MIN}+ legs from different games`
   if (req.daily && (mode !== 'parlay' || legs.length !== 3 || req.chaos || req.flex)) return 'The Daily Boost is one 3-leg parlay'
   const groups = mode === 'parlay' ? [legs] : legs.map(l => [l])
-  if (req.boost && (!(req.boost in BOOST_PCT) || groups.length !== 1 || req.flex || req.daily || req.squad)) return 'A boost goes on one ticket'
+  if (req.boost && (!Object.hasOwn(BOOST_PCT, req.boost) || groups.length !== 1 || req.flex || req.daily || req.squad)) return 'A boost goes on one ticket'
   if (req.insure && (mode !== 'parlay' || legs.length < 4 || req.flex || req.squad)) return 'Insurance covers parlays of 4+ legs'
   if (req.squad && mode !== 'parlay') return 'The squad bets one parlay'
   const boost = (req.boost ? BOOST_PCT[req.boost] : 0) + (req.chaos ? CHAOS_BOOST : 0) + (req.daily ? DAILY_BOOST : 0)
@@ -328,6 +335,7 @@ export async function gradeSports(legs: Leg[], fetchJson: (url: string) => Promi
     if (!cache.has(url)) cache.set(url, fetchJson(url).catch(() => undefined))
     const sum = await cache.get(url)
     const comp = sum?.header?.competitions?.[0]
+    if (comp?.status?.type?.name === 'STATUS_CANCELED') { changed = true; out.push({ ...l, result: 'push' }); continue }
     if (!comp?.status?.type?.completed) { out.push(l); continue }
     const score = (ha: string) => Number(comp.competitors.find((c: any) => c.homeAway === ha)?.score)
     const p = s.prop as { athleteId: string; stat: PropStat } | undefined
@@ -363,7 +371,7 @@ export function espnBoard(fetchJson: (url: string) => Promise<any>): Board {
       const prob = legProb(g, s.market, s.side, s.line)
       return { odds: priceOf(prob), line: s.line, prob }
     }
-    if (state !== 'pre') return undefined
+    if (state !== 'pre' || Date.parse(e.date) <= Date.now()) return undefined // no pregame price once the start time passes
     if (s.prop) {
       if (!comp?.competitors) return undefined
       // Props: the main over/under at the standard price, or a ladder rung priced from the main line.
@@ -399,6 +407,8 @@ export async function cashOutQuote(legs: Leg[], stake: number, opts: Ticket['opt
     }
     return 1 / toDecimal(live.odds)
   }))
+  // A sports leg with no price (a live prop, or a game that just ended and isn't graded yet) would sell at its old odds.
+  if (legs.some((l, i) => l.result === 'pending' && l.sport && probs[i] === undefined)) return "This ticket can't be cashed out right now"
   const v = cashOutValue(stake * (opts.sgpMult ?? 1), legs, probs)
   return v ?? 'Nothing to cash out'
 }

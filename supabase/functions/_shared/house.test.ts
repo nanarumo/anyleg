@@ -1,6 +1,6 @@
 // node supabase/functions/_shared/house.test.ts
 import assert from 'node:assert/strict'
-import { closeHand, handView, moveHand, startHand, dealRound, espnBoard, grade, gradeSports, playLeg, priceTickets, type Leg } from './house.ts'
+import { cashOutQuote, closeHand, handView, moveHand, startHand, dealRound, espnBoard, grade, gradeSports, playLeg, priceTickets, type Board, type Leg } from './house.ts'
 
 const fixed = (x: number) => () => x
 
@@ -72,6 +72,37 @@ for (let i = 0; i < 300; i++) {
   assert.ok(h.returned >= 0 && h.returned <= 20 * 2.5 + 26 + 251 + 15)
 }
 assert.equal(typeof startHand({ game: 'blackjack', bets: { main: 0 } as any }), 'string')
+
+// ---- exploits (2026-10-22 audit) ----
+// Penny stakes: rounding a $0.01 payout up to $0.02 made -110 bets and banker pay better than their odds.
+assert.equal(await priceTickets({ legs: [ml, red], stake: 0.5 }, board), 'Stakes start at $1')
+assert.equal(typeof dealRound({ game: 'baccarat', bets: [{ spot: 'banker', amount: 0.01 }] }), 'string')
+// A boost name that only exists on Object.prototype ("constructor") slipped past the token check.
+assert.equal(await priceTickets({ legs: [ml, red], stake: 10, boost: 'constructor' as any }, board), 'A boost goes on one ticket')
+// Two copies of one casino leg (different ids from the app) would leave a leg that can never be played.
+assert.equal(await priceTickets({ legs: [ml, red, { ...red, id: 'other' }], stake: 10 }, board), 'Same leg twice')
+// Same-game stacks that hit together: ML + spread of one team, or a prop with its own ladder rung.
+const any: Board = async l => ({ odds: -115, line: l.sport!.line })
+const spread: Leg = { ...ml, id: 'nfl:1:spread:home', sport: { ...ml.sport!, market: 'spread', line: -3.5 } }
+const total: Leg = { ...ml, id: 'nfl:1:total:over', sport: { ...ml.sport!, market: 'total', side: 'over', line: 44.5 } }
+const prop = (id: string, line: number): Leg => ({ ...ml, id, sport: { ...ml.sport!, market: 'prop', side: 'over', line, prop: { athleteId: '7', stat: 'passYds' } } })
+assert.match(await priceTickets({ legs: [ml, spread], stake: 10 }, any) as string, /one side/)
+assert.match(await priceTickets({ legs: [prop('p:over', 250.5), prop('p:alt:275', 274.5)], stake: 10 }, any) as string, /one side/)
+assert.equal((await priceTickets({ legs: [ml, total, prop('p:over', 250.5)], stake: 10 }, any) as any)[0].legs.length, 3) // a side, a total and a prop still stack
+// Live near-locks: a 40-0 lead with a minute left was offered at 1.01, a sure +1%.
+const liveFeed = { events: [{ id: '2', status: { type: { state: 'in' }, period: 4, displayClock: '1:00' }, competitions: [{ competitors: [{ homeAway: 'home', score: '40' }, { homeAway: 'away', score: '0' }] }] }] }
+const lock: Leg = { ...ml, id: 'nfl:2:live:ml:home', sport: { ...ml.sport!, eventId: '2' } }
+assert.match(await priceTickets({ legs: [lock], stake: 10 }, espnBoard(async () => liveFeed)) as string, /off the board/)
+// Pregame lines close at the scheduled start, even if the feed still says "pre".
+const late = { events: [{ ...feed.events[0], date: new Date(Date.now() - 6e4).toISOString() }] }
+assert.match(await priceTickets({ legs: [ml, red], stake: 10 }, espnBoard(async () => late)) as string, /off the board/)
+// Cash out: a leg whose game just ended (not graded yet) used to sell at its pregame odds.
+const over = { events: [{ id: '1', status: { type: { state: 'post' } }, competitions: [{}] }] }
+assert.match(await cashOutQuote([{ ...ml, odds: -150, result: 'pending' }, { ...red, odds: 100, result: 'won' }], 10, {}, espnBoard(async () => over)) as string, /can't be cashed out/)
+assert.equal(typeof await cashOutQuote([{ ...ml, odds: -150, result: 'pending' }], 10, {}, board), 'number')
+// A cancelled game pushes instead of staying open forever.
+const cancelled = async () => ({ header: { competitions: [{ status: { type: { name: 'STATUS_CANCELED', completed: false } } }] } })
+assert.equal((await gradeSports([{ ...ml, result: 'pending' }], cancelled))![0].result, 'push')
 console.log('house ok')
 
 // ---- player progress ----

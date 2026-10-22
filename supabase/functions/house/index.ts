@@ -31,6 +31,8 @@ const fail = (error: string, status = 400) => json({ error }, status)
 const nice = (e: { message?: string } | null) =>
   e?.message?.includes('insufficient_squad_bank') ? 'The squad bank can’t cover that'
     : e?.message?.includes('insufficient_balance') ? 'Not enough balance'
+      : e?.message?.includes('daily_used') ? 'Already bet today. A new boost drops tomorrow.'
+      : e?.message?.includes('chaos_used') ? 'One chaos ticket a day. Try again tomorrow.'
       : e?.message?.includes('bet_changed') || e?.message?.includes('duplicate') ? 'That ticket just changed. Try again.' : 'Something went wrong'
 
 const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!)
@@ -42,8 +44,8 @@ const pay = (user: string, amount: number, kind: string, ref?: string) =>
   admin.rpc('wallet_apply', { p_user: user, p_delta: amount, p_kind: kind, p_ref: ref ?? null })
 
 // ---- player progress: the profiles row is versioned (pver) so two requests can't both spend the same token ----
-const PLAYER = 'balance, squad_bank, inv, prestige, prestige_started_at, claimed_levels, challenges_claimed, seasons_claimed, xp_bonus, pver, code, referred_by, created_at, founder_at'
-type Row = Player & { balance: number; squad_bank: number; pver: number; code: string; referred_by: string | null; created_at: string; founder_at: string | null }
+const PLAYER = 'balance, squad_bank, inv, prestige, prestige_started_at, claimed_levels, challenges_claimed, seasons_claimed, xp_bonus, pver, code, referred_by, created_at, founder_at, ref_paid'
+type Row = Player & { balance: number; squad_bank: number; pver: number; code: string; referred_by: string | null; created_at: string; founder_at: string | null; ref_paid: boolean }
 const loadPlayer = async (id: string) => (await admin.from('profiles').select(PLAYER).eq('id', id).single()).data as Row
 /** Save progress columns if nobody changed them since `row` was read. */
 async function savePlayer(id: string, row: Row, next: Partial<Player>) {
@@ -84,6 +86,19 @@ async function finish(user: string, row: HandRow, state: Hand, returned: number,
   return error ? fail(error.message.includes('hand_changed') ? 'That hand already finished' : nice(error)) : json({ view, done: true, returned, balance })
 }
 
+/** A friend who used a code pays their referrer once they verify a phone (founder_at, one per number ever), so
+ * throwaway accounts can't farm referral cash. ref_paid flips first, so it pays once however many requests race. */
+async function payReferrer(friend: string) {
+  const { data } = await admin.from('profiles').update({ ref_paid: true }).eq('id', friend).eq('ref_paid', false)
+    .not('referred_by', 'is', null).not('founder_at', 'is', null).select('referred_by')
+  const ref = data?.[0]?.referred_by as string | undefined
+  if (!ref) return
+  // ponytail: two friends verifying in the same instant could both see count 5; per-referrer lock if it matters
+  const count = (await admin.from('profiles').select('id', { count: 'exact', head: true }).eq('referred_by', ref).eq('ref_paid', true)).count ?? 0
+  await update(ref, row => ({ next: { xp_bonus: row.xp_bonus + 500, inv: count === 3 ? { ...row.inv, boost100: row.inv.boost100 + 1 } : row.inv }, out: true }))
+  await pay(ref, 250 + (count === 5 ? 1000 : 0), 'referral', friend)
+}
+
 /** Grade one player's open sports legs from final scores. */
 async function settleSports(user: string) {
   const { data: bets } = await admin.from('bets').select('*').eq('user_id', user).eq('status', 'pending')
@@ -122,6 +137,7 @@ Deno.serve(async req => {
 
   if (body.action === 'me') {
     const row = await loadPlayer(me)
+    if (row.referred_by && row.founder_at && !row.ref_paid) await payReferrer(me)
     const { h, xp } = await progress(me, row)
     const [{ count }, { count: verified }] = await Promise.all([
       admin.from('profiles').select('id', { count: 'exact', head: true }).eq('referred_by', me),
@@ -223,9 +239,10 @@ Deno.serve(async req => {
   }
 
   if (body.action === 'spin') {
-    // ponytail: check-then-pay, so two spins sent in the same instant could both pay; a unique daily key would close it
-    const { count } = await admin.from('ledger').select('id', { count: 'exact', head: true }).eq('user_id', me).eq('kind', 'spin').gte('at', new Date(Date.now() - 864e5).toISOString())
-    if (count) return fail('Your next spin unlocks 24 hours after the last one')
+    // One UPDATE claims the spin, so two spins sent in the same instant can't both pay.
+    const { data: claimed } = await admin.from('profiles').update({ last_spin_at: new Date().toISOString() }).eq('id', me)
+      .or(`last_spin_at.is.null,last_spin_at.lt.${new Date(Date.now() - 864e5).toISOString()}`).select('id')
+    if (!claimed?.length) return fail('Your next spin unlocks 24 hours after the last one')
     const prize = spinIndex(rng)
     const p = SPIN_PRIZES[prize]
     if (p.spins || p.boost) await update(me, row => ({ next: { inv: { ...row.inv, spins: row.inv.spins + (p.spins ?? 0), ...(p.boost ? { [p.boost]: row.inv[p.boost] + 1 } : {}) } }, out: true }))
@@ -280,20 +297,19 @@ Deno.serve(async req => {
   }
 
   if (body.action === 'redeem') {
-    // A friend's code, once, in your first 7 days: you get $100 + a 50% boost; they get $250 + 500 XP (+ more at 3 and 5 friends).
+    // A friend's code, once, in your first 7 days: you get $100 + a 50% boost; once you verify a phone they get $250 + 500 XP (+ more at 3 and 5 friends).
     const code = String(body.code ?? '').trim().toUpperCase()
-    const { data: ref } = await admin.from('profiles').select('id').eq('code', code).maybeSingle()
+    const { data: ref } = await admin.from('profiles').select('id, referred_by').eq('code', code).maybeSingle()
     if (!ref) return fail('That code was not found')
     if (ref.id === me) return fail("You can't use your own code")
+    if (ref.referred_by === me) return fail('They joined with your code')
     const r = await update(me, row =>
       row.referred_by ? 'You already used a referral code'
         : Date.now() - Date.parse(row.created_at) > 7 * 864e5 ? 'Codes can only be used in your first 7 days'
           : { next: { referred_by: ref.id, inv: { ...row.inv, boost50: row.inv.boost50 + 1 } } as Partial<Player>, out: true })
     if (typeof r === 'string') return fail(r)
     const { data: balance } = await pay(me, 100, 'referral', ref.id)
-    const count = (await admin.from('profiles').select('id', { count: 'exact', head: true }).eq('referred_by', ref.id)).count ?? 0
-    await update(ref.id, row => ({ next: { xp_bonus: row.xp_bonus + 500, inv: count === 3 ? { ...row.inv, boost100: row.inv.boost100 + 1 } : row.inv }, out: true }))
-    await pay(ref.id, 250 + (count === 5 ? 1000 : 0), 'referral', me)
+    await payReferrer(me)
     return json({ balance })
   }
 

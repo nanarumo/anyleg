@@ -550,7 +550,7 @@ function Refer({ me }: { me: Account }) {
       <div className="panel center refer-hero">
         <div className="refer-art">👥</div>
         <h3>Invite friends, both of you win</h3>
-        <p className="muted">Friends who sign up with your code get <b>${REFERRAL.newCash} + a 50% Parlay Boost</b>. You get <b>${REFERRAL.referrerCash.toLocaleString()} + {REFERRAL.referrerXp} XP</b> for each one.</p>
+        <p className="muted">Friends who sign up with your code get <b>${REFERRAL.newCash} + a 50% Parlay Boost</b>. You get <b>${REFERRAL.referrerCash.toLocaleString()} + {REFERRAL.referrerXp} XP</b> for each one, once they verify a phone number.</p>
         <div className="code-box">{code}</div>
         <div className="btnrow">
           <button className="ghost" onClick={() => { if (copyText(code)) setCopied(true); else window.prompt('Copy your code:', code) }}>{copied ? 'Copied!' : 'Copy code'}</button>
