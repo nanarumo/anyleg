@@ -62,13 +62,21 @@ async function update<T>(id: string, change: (row: Row) => { next: Partial<Playe
   }
   return 'Busy, try again'
 }
-/** Bets and paid rounds since `since` (ISO). ponytail: first 1000 rows of each; page if a player outgrows it */
+/** Every row of a query, 1000 at a time (the API's cap per request). Ordered by id so pages don't overlap. */
+async function allRows<T>(query: () => any): Promise<T[]> {
+  const out: T[] = []
+  for (let i = 0; ; i += 1000) {
+    const { data } = await query().order('id').range(i, i + 999)
+    out.push(...(data ?? []))
+    if ((data?.length ?? 0) < 1000) return out
+  }
+}
+/** Bets and paid rounds since `since` (ISO). All of them: a capped list made XP and challenges drop for busy players. */
 async function historyRows(id: string, since: string, until?: string) {
-  let b = admin.from('bets').select('legs, stake, status, payout, opts, placed_at').eq('user_id', id).gte('placed_at', since)
-  let r = admin.from('rounds').select('game, wager, returned, at, note, bet_id').eq('user_id', id).gte('at', since)
-  if (until) { b = b.lt('placed_at', until); r = r.lt('at', until) }
-  const [bets, rounds] = await Promise.all([b.limit(1000), r.limit(1000)])
-  return { bets: (bets.data ?? []) as BetRow[], rounds: (rounds.data ?? []) as RoundRow[] }
+  const b = () => { const q = admin.from('bets').select('legs, stake, status, payout, opts, placed_at').eq('user_id', id).gte('placed_at', since); return until ? q.lt('placed_at', until) : q }
+  const r = () => { const q = admin.from('rounds').select('game, wager, returned, at, note, bet_id').eq('user_id', id).gte('at', since); return until ? q.lt('at', until) : q }
+  const [bets, rounds] = await Promise.all([allRows<BetRow>(b), allRows<RoundRow>(r)])
+  return { bets, rounds }
 }
 async function progress(id: string, row: Row) {
   const { bets, rounds } = await historyRows(id, row.prestige_started_at)
