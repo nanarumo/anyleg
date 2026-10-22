@@ -37,7 +37,7 @@ const admin = createClient(Deno.env.get('SUPABASE_URL')!, Deno.env.get('SUPABASE
 const getJson = async (url: string) => { const r = await fetch(url); if (!r.ok) throw new Error(String(r.status)); return r.json() }
 const board = () => espnBoard(getJson)
 /** Founders reward, in promo dollars reserved for real-money play (if it launches). Matches reports.founders in 0006_founders.sql. */
-const FOUNDER = { base: 20, perFriend: 5 }
+const FOUNDER = { base: 15, perFriend: 5 }
 const pay = (user: string, amount: number, kind: string, ref?: string) =>
   admin.rpc('wallet_apply', { p_user: user, p_delta: amount, p_kind: kind, p_ref: ref ?? null })
 

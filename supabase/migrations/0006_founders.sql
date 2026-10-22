@@ -1,5 +1,5 @@
 -- Founders reward: players who verify an email before real-money play exists reserve promo credit
--- ($20, plus $5 for each friend who joins with their code and verifies too). Nothing here is money or is paid out:
+-- ($15, plus $5 for each friend who joins with their code and verifies too). Nothing here is money or is paid out:
 -- it's the record of who joined early and who they brought, read by the house function and by the reports below.
 
 alter table public.profiles add column founder_at timestamptz; -- when this player first verified an email
@@ -26,7 +26,7 @@ revoke all on schema reports from public, anon, authenticated;
 create view reports.founders as
 select p.name, u.email, p.code, p.founder_at, p.created_at, r.code as joined_with_code,
   f.verified_friends, f.all_friends,
-  case when p.founder_at is null then 0 else 20 + 5 * f.verified_friends end as reserved_usd
+  case when p.founder_at is null then 0 else 15 + 5 * f.verified_friends end as reserved_usd
 from public.profiles p
 join auth.users u on u.id = p.id
 left join public.profiles r on r.id = p.referred_by

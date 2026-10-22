@@ -428,7 +428,7 @@ function Rewards() {
 }
 
 const reserved = (f: Founder) => (f.at ? f.base + f.perFriend * f.friends : 0)
-const RESERVED_TERMS = 'Reserved promo credit: not cash and worth nothing today. It is issued only if Anyleg launches real-money play where you live, only to identity-verified players 21+, only toward a parlay with a casino leg, and is subject to the Founders terms and availability. Anyleg may change or end this offer.'
+const RESERVED_TERMS = 'Reserved promo credit: not cash and worth nothing today. We are actively working toward real-money play, but it is not guaranteed and may never happen. The credit is issued only if Anyleg launches real-money play where you live, only to identity-verified players 21+, only toward a parlay with a casino leg, and is subject to the Founders terms and availability. Anyleg may change or end this offer.'
 
 /** Founders reward: promo credit reserved for real-money play, if Anyleg ever offers it. Server mode only. */
 function FounderCard() {
@@ -736,7 +736,7 @@ const DOCS: Partial<Record<Page, ReactNode>> = {
   terms: <><p>Anyleg is a free-to-play entertainment app for adults 18+. It uses play money only: there is no real-money gambling, and nothing here can be bought, deposited, withdrawn or exchanged for real money, prizes or anything of value. Leaderboard prizes and rewards are all play money or cosmetics. Odds are shown for entertainment and may lag the real market. Success here does not mean future success at real-money gambling.</p>
     <h4>Not affiliated</h4><p>Anyleg is not affiliated with, endorsed or sponsored by any sports league, team, player, sportsbook or casino. League, team and player names belong to their owners and appear only to identify real games and stats. Anyleg does not use league or team logos or player photos.</p>
     <h4>Play money</h4><p>Play money and rewards have no cash value. They can't be bought, sold, transferred between accounts or redeemed for anything. Selling or trading accounts or play money outside the app is not allowed, and Anyleg may reset any account involved.</p>
-    <h4>Founders reward</h4><p>Players who verify an email before Anyleg offers real-money play reserve $20 of promo credit, plus $5 for each friend who joins with their code and verifies an email, with no limit. {RESERVED_TERMS} Anyleg does not offer real-money play today and may never do so. Accounts made to collect extra referrals, or one person using several emails, don't count.</p>
+    <h4>Founders reward</h4><p>Players who verify an email before Anyleg offers real-money play reserve $15 of promo credit, plus $5 for each friend who joins with their code and verifies an email, with no limit. {RESERVED_TERMS} Accounts made to collect extra referrals, or one person using several emails, don't count.</p>
     <h4>Bots</h4><p>Season leaderboard bots, squad bots and house creators are computer players, and they're labeled as bots.</p>
     <h4>Sports data</h4><p>Scores, schedules and lines come from public ESPN feeds. They can be delayed or wrong, and a feed outage can delay settlement.</p>
     <h4>Your controls</h4><p>Set a daily play limit, session reminders or a break of up to a year in My Budget and Controls. If gambling stops being fun, call 1-800-GAMBLER.</p>
