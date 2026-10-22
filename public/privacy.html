@@ -16,15 +16,16 @@
 <p>Anyleg is a free-to-play sports and casino parlay simulator for adults 18+. It uses play money only. There is no real-money gambling, and nothing in the app can be bought, deposited, withdrawn or exchanged for real money, prizes or anything of value.</p>
 
 <h2>Data we collect</h2>
-<p>To run the game fairly, Anyleg keeps your play-money wallet on our server. On first launch the app creates an anonymous account for your device. We do not ask for your real name, phone number, contacts, location or any payment details. The server stores:</p>
+<p>To run the game fairly, Anyleg keeps your play-money wallet on our server. On first launch the app creates an anonymous account for your device. We do not ask for your real name, contacts, location or any payment details. The server stores:</p>
 <ul>
 <li>an anonymous account ID for your device</li>
 <li>the username you choose</li>
 <li>your play-money balance, bets, casino rounds, rewards and level progress</li>
 <li>your referral code and, if you used one, the code of the player who referred you</li>
-<li>your email address, only if you choose to add one, and when you verified it (for the Founders reward)</li>
+<li>your email address or Apple/Google sign-in, only if you choose to add one</li>
+<li>your phone number, only if you verify one for the Founders reward</li>
 </ul>
-<p>We use your email only to sign you in with a one-time code and to record your Founders reward; we never send marketing. We use the rest only to run the app: keeping your balance, settling bets and paying rewards. There are no ads, no analytics and no tracking, and we never sell or share your data. It is stored with Supabase, our database provider, which processes it only on our behalf and protects it to the same standard. Like any web service, our server and ESPN see your device's IP address when the app connects; we don't use it to identify you.</p>
+<p>We use your email and phone only to sign you in and to run the Founders reward; we never send marketing. Text codes are sent through Twilio. When you delete your account we keep only a one-way fingerprint (hash) of your phone number, so the same number can't earn the reward twice. We use the rest only to run the app: keeping your balance, settling bets and paying rewards. There are no ads, no analytics and no tracking, and we never sell or share your data. It is stored with Supabase, our database provider, which processes it only on our behalf and protects it to the same standard. Like any web service, our server and ESPN see your device's IP address when the app connects; we don't use it to identify you.</p>
 
 <h2>Data stored on your device</h2>
 <p>Your avatar, settings and a copy of your recent history are also saved on your device so the app opens quickly.</p>

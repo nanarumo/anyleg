@@ -132,7 +132,7 @@ Deno.serve(async req => {
       claimedLevels: row.claimed_levels, challengesClaimed: row.challenges_claimed, seasonsClaimed: row.seasons_claimed,
       challengesDone: CHALLENGES.filter(c => (c.minPrestige ?? 0) <= row.prestige && c.progress(h) >= c.goal).map(c => c.id),
       code: row.code, referredBy: row.referred_by, referrals: count ?? 0, createdAt: row.created_at,
-      email: user.email ?? null, founder: { at: row.founder_at, friends: verified ?? 0, ...FOUNDER },
+      email: user.email || null, phone: user.phone || null, founder: { at: row.founder_at, friends: verified ?? 0, ...FOUNDER },
     })
   }
 
@@ -262,7 +262,9 @@ Deno.serve(async req => {
     // Weeks run Monday to Monday in UTC on the server. ponytail: the app's weeks are local time, so a bet near midnight can land in a different week
     const week = String(body.week)
     const start = Date.parse(week + 'T00:00:00Z'), end = start + 7 * 864e5
-    if (!/^\d{4}-\d{2}-\d{2}$/.test(week) || !(end <= Date.now())) return fail('That week is not over yet')
+    // Only Mondays: any other start day would let one big week be claimed seven times.
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(week) || new Date(start).getUTCDay() !== 1) return fail('Not a season week')
+    if (!(end <= Date.now())) return fail('That week is not over yet')
     const { bets, rounds } = await historyRows(me, new Date(start).toISOString(), new Date(end).toISOString())
     const h = historyOf(bets, rounds)
     const settled = h.bets.filter(b => b.status !== 'pending')

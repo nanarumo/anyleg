@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react'
-import { SPIN_PRIZES, spinIndex, CHAOS_BOOST, simRound, applyTokens, gradeCasino, roundText, parlayDecimal, settleFlex, FLEX_MIN, toDecimal, uid, setOddsFormat, settle, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side } from './logic.ts'
+import { SPIN_PRIZES, spinIndex, CHAOS_BOOST, simRound, applyTokens, gradeCasino, roundText, parlayDecimal, settleFlex, FLEX_MIN, toDecimal, uid, setOddsFormat, settle, marketFamily, type CasinoGame, type Market, type PropStat, type Result, type Round, type Side } from './logic.ts'
 import { CHALLENGES, challengeBoost, newlyCompleted, type SkinId } from './challenges.ts'
 import { PRIZES, weekId } from './season.ts'
 import { SERVER, deleteServerAccount, house, pull, type ServerBet } from './server.ts'
@@ -98,6 +98,7 @@ type State = {
   code?: string // server mode: this player's referral code
   referrals?: number // server mode: how many joined with it
   email?: string // server mode: the verified email on this account
+  phone?: string // server mode: the verified phone (E.164) on this account
   founder?: Founder // server mode: the Founders reward
   prestigeStartedAt?: number // challenges only count play since this moment
   prestigeUp?: { prestige: number; at: number; rewards: Reward[] } // newest prestige, for the celebration
@@ -496,13 +497,13 @@ export const MAX_LEGS = 15
 
 const marketOf = (l: Leg) => {
   const s = l.sport!
-  return `${s.eventId}:${l.id.includes(':live:') ? 'live:' : ''}${s.market}:${s.prop ? s.prop.athleteId + ':' + s.prop.stat : ''}`
+  return `${s.eventId}:${l.id.includes(':live:') ? 'live:' : ''}${marketFamily(s)}`
 }
 export function toggleLeg(leg: Leg) {
   if (state.squadPicking !== undefined && state.squad) { const i = state.squadPicking; set({ squadPicking: undefined }); return setSquadPick(i, leg) }
   if (state.slip.some(l => l.id === leg.id)) return set({ slip: state.slip.filter(l => l.id !== leg.id) })
-  // One pick per market: the other side of the same line (or a different line) replaces it. Different markets
-  // and different players' props from one game can stack into a same-game parlay.
+  // One pick per game side (moneyline or spread), total and player stat: a new one replaces the old. The total, the side
+  // and different players' props from one game can stack into a same-game parlay (the server enforces the same rule).
   const slip = leg.sport ? state.slip.filter(l => !l.sport || marketOf(l) !== marketOf(leg)) : state.slip
   if (slip.length >= MAX_LEGS) return
   set({ slip: [...slip, leg] })
@@ -752,7 +753,7 @@ async function serverBetRaw(body: Record<string, unknown>, cost: number, clearSl
 type Me = {
   balance: number; squadBank: number; inv: Inventory; xp: number; prestige: number; prestigeStartedAt: string; claimedLevels: string[]
   challengesClaimed: string[]; challengesDone: string[]; seasonsClaimed: string[]; code: string; referrals: number
-  email: string | null; founder: Founder
+  email: string | null; phone: string | null; founder: Founder
 }
 /** The server's balance, tickets, XP, tokens and claims replace the local copies. */
 export async function syncServer(settleSports = false) {
@@ -766,7 +767,7 @@ export async function syncServer(settleSports = false) {
   const patch: Partial<State> = {
     balance: me.balance, inv: { ...NO_INV, ...me.inv }, bets: [...bets, ...state.bets.filter(b => !ids.has(b.id) && !b.server)],
     prestige: me.prestige, prestigeStartedAt: Date.parse(me.prestigeStartedAt), claimedLevels: me.claimedLevels, challengesClaimed: me.challengesClaimed,
-    challengesDone: [...new Set([...state.challengesDone, ...me.challengesDone])], seasonsClaimed: me.seasonsClaimed, code: me.code, referrals: me.referrals, email: me.email || undefined, founder: me.founder,
+    challengesDone: [...new Set([...state.challengesDone, ...me.challengesDone])], seasonsClaimed: me.seasonsClaimed, code: me.code, referrals: me.referrals, email: me.email || undefined, phone: me.phone || undefined, founder: me.founder,
     ...(me.referrals >= 5 ? { unlocked: unlockAll([{ kind: 'frame', name: 'Recruiter', color: '#22d3ee' }]) } : {}), // 5 friends joined
     ...(state.squad ? { squad: { ...state.squad, bank: Number(me.squadBank) } } : {}),
   }

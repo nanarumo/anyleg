@@ -8,7 +8,7 @@ import {
   type Account, type Bet, type CasinoRound, type Founder, type Txn,
 } from './store.ts'
 import { GAME_NAMES } from './Casino.tsx'
-import { PROVIDERS, SERVER, sendEmailCode, socialSignIn, verifyEmailCode } from './server.ts'
+import { PROVIDERS, SERVER, sendEmailCode, sendPhoneCode, socialSignIn, verifyEmailCode, verifyPhoneCode } from './server.ts'
 import { LegIcon } from './LegIcon.tsx'
 import { Insignia, ProgressionPage, RankSummary } from './Rank.tsx'
 import { levelOf, rankAt, rankName } from './progression.ts'
@@ -432,23 +432,58 @@ const RESERVED_TERMS = 'Reserved promo credit: not cash and worth nothing today.
 
 /** Founders reward: promo credit reserved for real-money play, if Anyleg ever offers it. Server mode only. */
 function FounderCard() {
-  const { founder, email, referrals = 0 } = useStore()
+  const { founder, phone, referrals = 0 } = useStore()
   if (!SERVER || !founder) return null
   const waiting = referrals - founder.friends
   return (
     <div className="panel center founder">
       <div className="founder-tag">FOUNDERS REWARD</div>
       <div className="founder-amt">${founder.at ? reserved(founder) : founder.base}</div>
-      <div className="muted small">{founder.at ? 'waiting for you when real money drops' : 'sign in to lock it in'}</div>
+      <div className="muted small">{founder.at ? 'waiting for you when real money drops' : 'verify your phone number to lock it in'}</div>
       <div className="founder-split">
         <div><b>${founder.base}</b><span>founder credit</span></div>
         <div><b>+${founder.perFriend * founder.friends}</b><span>{founder.friends} verified friend{founder.friends === 1 ? '' : 's'}</span></div>
       </div>
-      <p className="small">Every friend who joins with your code and signs in with Apple, Google or a verified email adds <b>${founder.perFriend}</b>. No limit.</p>
-      {waiting > 0 && <p className="muted small">{waiting} friend{waiting === 1 ? '' : 's'} joined with your code but {waiting === 1 ? "hasn't" : "haven't"} signed in yet.</p>}
-      {founder.at ? email && <p className="muted small">Locked in to {email}</p> : <SignIn />}
+      <p className="small">Every friend who joins with your code and verifies their phone number adds <b>${founder.perFriend}</b>. No limit.</p>
+      {waiting > 0 && <p className="muted small">{waiting} friend{waiting === 1 ? '' : 's'} joined with your code but {waiting === 1 ? "hasn't" : "haven't"} verified a phone yet.</p>}
+      {founder.at ? phone && <p className="muted small">Locked in to the number ending {phone.slice(-4)}</p>
+        : phone ? <p className="warn small">This number already earned a Founders reward on another account. One per number.</p> : <PhoneVerify />}
       <p className="muted small founder-terms">{RESERVED_TERMS}</p>
     </div>
+  )
+}
+
+/** Text a 6-digit code to a phone and confirm it. Ten digits are taken as a US number. */
+function PhoneVerify() {
+  const [phone, setPhone] = useState('')
+  const [code, setCode] = useState('')
+  const [sent, setSent] = useState<string>()
+  const [msg, setMsg] = useState<{ text: string; bad?: boolean }>()
+  const [busy, setBusy] = useState(false)
+  const run = (f: () => Promise<void>) => async (e: FormEvent) => {
+    e.preventDefault(); setBusy(true); setMsg(undefined)
+    try { await f() } catch (err) { setMsg({ text: (err as Error).message, bad: true }) }
+    setBusy(false)
+  }
+  const send = run(async () => {
+    const d = phone.replace(/[^\d+]/g, '')
+    const e164 = d.startsWith('+') ? d : d.length === 10 ? '+1' + d : '+' + d
+    if (!/^\+\d{8,15}$/.test(e164)) throw new Error('Enter a full phone number')
+    await sendPhoneCode(e164)
+    setSent(e164)
+    setMsg({ text: `We texted a 6-digit code to ${e164}.` })
+  })
+  const verify = run(async () => { await verifyPhoneCode(sent!, code.trim()); await syncServer(); setMsg({ text: 'Phone verified' }) })
+  return (
+    <form className="email-form" onSubmit={sent ? verify : send}>
+      {sent
+        ? <input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code" maxLength={6} required />
+        : <input type="tel" value={phone} onChange={e => setPhone(e.target.value)} autoComplete="tel" placeholder="(555) 123-4567" required />}
+      <button className="cta" disabled={busy}>{sent ? 'Verify' : 'Text me a code'}</button>
+      {sent && <button type="button" className="ghost" onClick={() => { setSent(undefined); setCode(''); setMsg(undefined) }}>Use a different number</button>}
+      {msg && <p className={`small ${msg.bad ? 'warn' : 'win'}`}>{msg.text}</p>}
+      {!sent && <p className="muted small">One Founders reward per phone number. Standard text rates may apply.</p>}
+    </form>
   )
 }
 
@@ -640,7 +675,7 @@ function Security({ me }: { me: Account }) {
     <div className="panel">
       {SERVER && (email
         ? <div className="set-row"><div><b>Signed in</b><div className="muted small">As {email}. Use the same sign-in on any device to get this account back.</div></div></div>
-        : <><b>Sign in</b><p className="muted small">Keeps this account safe if you lose your phone, and locks in your Founders reward. Signed in on another device before? Use the same option to get that account back.</p><SignIn /></>)}
+        : <><b>Sign in</b><p className="muted small">Keeps this account safe if you lose your phone. Signed in on another device before? Use the same option to get that account back.</p><SignIn /></>)}
       <p className="muted small">Your avatar and look are stored on this device. Anyleg uses play money only, so there are no passwords.</p>
       <b>Accounts on this device</b>
       <div className="acct-list">
@@ -743,7 +778,7 @@ const DOCS: Partial<Record<Page, ReactNode>> = {
   terms: <><p>Anyleg is a free-to-play entertainment app for adults 18+. It uses play money only: there is no real-money gambling, and nothing here can be bought, deposited, withdrawn or exchanged for real money, prizes or anything of value. Leaderboard prizes and rewards are all play money or cosmetics. Odds are shown for entertainment and may lag the real market. Success here does not mean future success at real-money gambling.</p>
     <h4>Not affiliated</h4><p>Anyleg is not affiliated with, endorsed or sponsored by any sports league, team, player, sportsbook or casino. League, team and player names belong to their owners and appear only to identify real games and stats. Anyleg does not use league or team logos or player photos.</p>
     <h4>Play money</h4><p>Play money and rewards have no cash value. They can't be bought, sold, transferred between accounts or redeemed for anything. Selling or trading accounts or play money outside the app is not allowed, and Anyleg may reset any account involved.</p>
-    <h4>Founders reward</h4><p>Players who sign in with Apple, Google or a verified email before Anyleg offers real-money play reserve $15 of promo credit, plus $5 for each friend who joins with their code and does the same, with no limit. {RESERVED_TERMS} Accounts made to collect extra referrals, or one person using several emails, don't count.</p>
+    <h4>Founders reward</h4><p>Players who verify a phone number before Anyleg offers real-money play reserve $15 of promo credit, plus $5 for each friend who joins with their code and verifies their own phone number, with no limit. Each phone number can earn the reward once, ever, including after an account is deleted. {RESERVED_TERMS} Accounts made to collect extra referrals don't count. Before any credit is issued, real-money play will require a full identity check (ID, Social Security number and address).</p>
     <h4>Bots</h4><p>Season leaderboard bots, squad bots and house creators are computer players, and they're labeled as bots.</p>
     <h4>Sports data</h4><p>Scores, schedules and lines come from public ESPN feeds. They can be delayed or wrong, and a feed outage can delay settlement.</p>
     <h4>Your controls</h4><p>Set a daily play limit, session reminders or a break of up to a year in My Budget and Controls. If gambling stops being fun, call 1-800-GAMBLER.</p>
@@ -753,7 +788,7 @@ const DOCS: Partial<Record<Page, ReactNode>> = {
   privacy: <>
     <p>Anyleg never asks for your real name, phone, location or payment details, and never sells or shares your data. There are no ads, no analytics and no tracking.</p>
     <h4>What is stored</h4><p>Your device gets an account on our server (hosted by Supabase). It holds your username, play-money balance, bets, casino rounds, rewards, referral code and who joined with it, used only to run the game. Your avatar and settings stay on this device.</p>
-    <h4>Email</h4><p>Adding an email is optional. We use it only to sign you in with a one-time code and to record your Founders reward. We don't send marketing.</p>
+    <h4>Email and phone</h4><p>Adding an email, Apple or Google sign-in, or a phone number is optional. We use them only to sign you in and, for your phone, to run the Founders reward. We don't send marketing. When you delete your account we keep only a one-way fingerprint of your phone number, so the same number can't earn the reward twice.</p>
     <h4>Network requests</h4><p>The app downloads public sports scores and odds from ESPN. Those requests carry no account information.</p>
     <h4>Deleting your data</h4><p>Go to Login &amp; Security and tap Delete account to erase the account and everything tied to it from our server and this device.</p>
     <h4>Contact</h4><p>Privacy questions: <a href="mailto:anylegsupport@gmail.com">anylegsupport@gmail.com</a></p>

@@ -56,6 +56,17 @@ export async function verifyEmailCode(email: string, token: string, mode: 'link'
   if (error) throw error
 }
 
+/** Text a 6-digit code to add this phone to the account (it becomes a sign-in too). A number can belong to one account only. */
+export async function sendPhoneCode(phone: string) {
+  await signedIn()
+  const { error } = await sb.auth.updateUser({ phone })
+  if (error) throw new Error(/already|registered|exists/i.test(error.message) ? 'That number is already on another Anyleg account' : error.message)
+}
+export async function verifyPhoneCode(phone: string, token: string) {
+  const { error } = await sb.auth.verifyOtp({ phone, token, type: 'phone_change' })
+  if (error) throw error
+}
+
 // Apple and Google sign-in. These client IDs are public (not secrets); a blank one keeps that button hidden.
 const GOOGLE_IOS_CLIENT = '' // Google Cloud > Credentials > OAuth client (iOS, bundle com.anyleg.app)
 const GOOGLE_WEB_CLIENT = '' // Google Cloud > Credentials > OAuth client (Web), also pasted into Supabase's Google provider
