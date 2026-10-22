@@ -8,7 +8,7 @@ import {
   type Account, type Bet, type CasinoRound, type Founder, type Txn,
 } from './store.ts'
 import { GAME_NAMES } from './Casino.tsx'
-import { SERVER, sendEmailCode, verifyEmailCode } from './server.ts'
+import { PROVIDERS, SERVER, sendEmailCode, socialSignIn, verifyEmailCode } from './server.ts'
 import { LegIcon } from './LegIcon.tsx'
 import { Insignia, ProgressionPage, RankSummary } from './Rank.tsx'
 import { levelOf, rankAt, rankName } from './progression.ts'
@@ -439,21 +439,21 @@ function FounderCard() {
     <div className="panel center founder">
       <div className="founder-tag">FOUNDERS REWARD</div>
       <div className="founder-amt">${founder.at ? reserved(founder) : founder.base}</div>
-      <div className="muted small">{founder.at ? 'waiting for you when real money drops' : 'verify your email to lock it in'}</div>
+      <div className="muted small">{founder.at ? 'waiting for you when real money drops' : 'sign in to lock it in'}</div>
       <div className="founder-split">
         <div><b>${founder.base}</b><span>founder credit</span></div>
         <div><b>+${founder.perFriend * founder.friends}</b><span>{founder.friends} verified friend{founder.friends === 1 ? '' : 's'}</span></div>
       </div>
-      <p className="small">Every friend who joins with your code and verifies their email adds <b>${founder.perFriend}</b>. No limit.</p>
-      {waiting > 0 && <p className="muted small">{waiting} friend{waiting === 1 ? '' : 's'} joined with your code but {waiting === 1 ? "hasn't" : "haven't"} verified an email yet.</p>}
-      {founder.at ? email && <p className="muted small">Locked in to {email}</p> : <EmailSignIn />}
+      <p className="small">Every friend who joins with your code and signs in with Apple, Google or a verified email adds <b>${founder.perFriend}</b>. No limit.</p>
+      {waiting > 0 && <p className="muted small">{waiting} friend{waiting === 1 ? '' : 's'} joined with your code but {waiting === 1 ? "hasn't" : "haven't"} signed in yet.</p>}
+      {founder.at ? email && <p className="muted small">Locked in to {email}</p> : <SignIn />}
       <p className="muted small founder-terms">{RESERVED_TERMS}</p>
     </div>
   )
 }
 
-/** Verify an email with a 6-digit code: adds it to this account, or signs into the account that already has it. */
-function EmailSignIn() {
+/** Apple, Google, or an email with a 6-digit code: adds the sign-in to this account, or signs into the account that already has it. */
+function SignIn() {
   const [email, setEmail] = useState('')
   const [code, setCode] = useState('')
   const [mode, setMode] = useState<'link' | 'signin'>()
@@ -471,8 +471,15 @@ function EmailSignIn() {
       : `${email.trim()} already has an account. Enter the code we emailed to sign in to it. This device's current play money stays with its old account.` })
   })
   const verify = run(async () => { await verifyEmailCode(email.trim(), code.trim(), mode!); await syncServer(); setMsg({ text: 'Email verified' }) })
+  const social = (p: 'apple' | 'google') => run(async () => { await socialSignIn(p); await syncServer(); setMsg({ text: 'Signed in' }) })
   return (
     <form className="email-form" onSubmit={mode ? verify : send}>
+      {!mode && PROVIDERS.map(p => (
+        <button key={p} type="button" className={`social-btn ${p}`} disabled={busy} onClick={social(p)}>
+          {p === 'apple' ? <><span aria-hidden></span> Continue with Apple</> : <><b aria-hidden>G</b> Continue with Google</>}
+        </button>
+      ))}
+      {!mode && PROVIDERS.length > 0 && <div className="muted small or-line">or use email</div>}
       {mode
         ? <input value={code} onChange={e => setCode(e.target.value)} inputMode="numeric" autoComplete="one-time-code" placeholder="6-digit code" maxLength={6} required />
         : <input type="email" value={email} onChange={e => setEmail(e.target.value)} autoComplete="email" placeholder="you@email.com" required />}
@@ -632,8 +639,8 @@ function Security({ me }: { me: Account }) {
   return (
     <div className="panel">
       {SERVER && (email
-        ? <div className="set-row"><div><b>Email</b><div className="muted small">Signed in as {email}. Sign in with it on any device to get this account back.</div></div></div>
-        : <><b>Add your email</b><p className="muted small">Keeps this account safe if you lose your phone, and locks in your Founders reward. Already verified one on another device? Enter it to sign back in.</p><EmailSignIn /></>)}
+        ? <div className="set-row"><div><b>Signed in</b><div className="muted small">As {email}. Use the same sign-in on any device to get this account back.</div></div></div>
+        : <><b>Sign in</b><p className="muted small">Keeps this account safe if you lose your phone, and locks in your Founders reward. Signed in on another device before? Use the same option to get that account back.</p><SignIn /></>)}
       <p className="muted small">Your avatar and look are stored on this device. Anyleg uses play money only, so there are no passwords.</p>
       <b>Accounts on this device</b>
       <div className="acct-list">
@@ -736,7 +743,7 @@ const DOCS: Partial<Record<Page, ReactNode>> = {
   terms: <><p>Anyleg is a free-to-play entertainment app for adults 18+. It uses play money only: there is no real-money gambling, and nothing here can be bought, deposited, withdrawn or exchanged for real money, prizes or anything of value. Leaderboard prizes and rewards are all play money or cosmetics. Odds are shown for entertainment and may lag the real market. Success here does not mean future success at real-money gambling.</p>
     <h4>Not affiliated</h4><p>Anyleg is not affiliated with, endorsed or sponsored by any sports league, team, player, sportsbook or casino. League, team and player names belong to their owners and appear only to identify real games and stats. Anyleg does not use league or team logos or player photos.</p>
     <h4>Play money</h4><p>Play money and rewards have no cash value. They can't be bought, sold, transferred between accounts or redeemed for anything. Selling or trading accounts or play money outside the app is not allowed, and Anyleg may reset any account involved.</p>
-    <h4>Founders reward</h4><p>Players who verify an email before Anyleg offers real-money play reserve $15 of promo credit, plus $5 for each friend who joins with their code and verifies an email, with no limit. {RESERVED_TERMS} Accounts made to collect extra referrals, or one person using several emails, don't count.</p>
+    <h4>Founders reward</h4><p>Players who sign in with Apple, Google or a verified email before Anyleg offers real-money play reserve $15 of promo credit, plus $5 for each friend who joins with their code and does the same, with no limit. {RESERVED_TERMS} Accounts made to collect extra referrals, or one person using several emails, don't count.</p>
     <h4>Bots</h4><p>Season leaderboard bots, squad bots and house creators are computer players, and they're labeled as bots.</p>
     <h4>Sports data</h4><p>Scores, schedules and lines come from public ESPN feeds. They can be delayed or wrong, and a feed outage can delay settlement.</p>
     <h4>Your controls</h4><p>Set a daily play limit, session reminders or a break of up to a year in My Budget and Controls. If gambling stops being fun, call 1-800-GAMBLER.</p>

@@ -1607,3 +1607,8 @@ html { overscroll-behavior: none; }
 .email-form { display: flex; flex-wrap: wrap; gap: 8px; margin: 8px 0; }
 .email-form input { flex: 1 1 180px; width: auto; text-align: left; }
 .email-form p { flex-basis: 100%; margin: 0; }
+.social-btn { flex-basis: 100%; display: flex; align-items: center; justify-content: center; gap: 8px; padding: 12px; border-radius: 12px; font-weight: 800; border: 1px solid var(--line); }
+.social-btn.apple { background: #fff; color: #000; }
+.social-btn.google { background: var(--panel2); color: var(--text, #fff); }
+.social-btn.google b { color: #4285f4; font-size: 18px; }
+.or-line { flex-basis: 100%; text-align: center; }

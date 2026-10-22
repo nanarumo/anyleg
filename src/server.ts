@@ -1,6 +1,8 @@
 // The Anyleg server (Supabase). It owns balances, bets and casino outcomes; the app asks and shows what it says.
 // The URL and publishable key are public by design: the database only lets a player read their own rows.
 import { createClient } from '@supabase/supabase-js'
+import { Capacitor } from '@capacitor/core'
+import { SocialLogin } from '@capgo/capacitor-social-login'
 
 const URL = 'https://mnlloyzjocjsqmowepdo.supabase.co'
 const KEY = 'sb_publishable_-VQQcZiD7gSacK1bnDNf0A_0HLqQ7DK'
@@ -51,6 +53,45 @@ export async function sendEmailCode(email: string): Promise<'link' | 'signin'> {
 /** Check the emailed code; the session is then the email account. */
 export async function verifyEmailCode(email: string, token: string, mode: 'link' | 'signin') {
   const { error } = await sb.auth.verifyOtp({ email, token, type: mode === 'link' ? 'email_change' : 'email' })
+  if (error) throw error
+}
+
+// Apple and Google sign-in. These client IDs are public (not secrets); a blank one keeps that button hidden.
+const GOOGLE_IOS_CLIENT = '' // Google Cloud > Credentials > OAuth client (iOS, bundle com.anyleg.app)
+const GOOGLE_WEB_CLIENT = '' // Google Cloud > Credentials > OAuth client (Web), also pasted into Supabase's Google provider
+const APPLE_SERVICES_ID = '' // Apple Developer > Identifiers > Services ID, for the web build (the iPhone app needs none)
+const APPLE_ON = false // true once Supabase's Apple provider lists com.anyleg.app (and the Services ID) as client IDs
+const NATIVE = Capacitor.isNativePlatform()
+export const PROVIDERS = [
+  ...(APPLE_ON && (NATIVE || APPLE_SERVICES_ID) ? ['apple' as const] : []),
+  ...((NATIVE ? GOOGLE_IOS_CLIENT : GOOGLE_WEB_CLIENT) ? ['google' as const] : []),
+]
+
+const sha256 = async (s: string) =>
+  [...new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)))].map(b => b.toString(16).padStart(2, '0')).join('')
+let socialReady: Promise<void> | undefined
+
+/** Apple or Google: an anonymous account keeps everything by adding the identity; one already used elsewhere signs into that account. */
+export async function socialSignIn(provider: 'apple' | 'google') {
+  await (socialReady ??= SocialLogin.initialize({
+    apple: { clientId: APPLE_SERVICES_ID, redirectUrl: NATIVE ? '' : location.origin },
+    google: { iOSClientId: GOOGLE_IOS_CLIENT, iOSServerClientId: GOOGLE_WEB_CLIENT, webClientId: GOOGLE_WEB_CLIENT },
+  }))
+  // Apple signs a hash of the nonce and Supabase checks it. Google's iPhone SDK can't take one ("Skip nonce checks" in Supabase).
+  const nonce = crypto.randomUUID()
+  const res = provider === 'apple'
+    ? await SocialLogin.login({ provider, options: { scopes: ['email'], nonce: await sha256(nonce) } })
+    : await SocialLogin.login({ provider, options: {} })
+  const token = (res.result as { idToken?: string | null }).idToken
+  if (!token) throw new Error('Sign-in was cancelled')
+  const creds = { provider, token, ...(provider === 'apple' ? { nonce } : {}) }
+  await signedIn()
+  if ((await sb.auth.getUser()).data.user?.is_anonymous) {
+    const { error } = await sb.auth.linkIdentity(creds)
+    if (!error) return
+    if (!/already|exists|linked/i.test(error.message)) throw error
+  }
+  const { error } = await sb.auth.signInWithIdToken(creds)
   if (error) throw error
 }
 
